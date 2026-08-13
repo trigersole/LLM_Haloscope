@@ -50,7 +50,10 @@ def load_benchmark(name: str, limit: int | None = None) -> list[dict[str, Any]]:
     load_dataset = _require_datasets()
     normalized = name.lower().replace("-", "").replace("_", "")
     if normalized in {"truthfulqa", "tqa"}:
-        dataset = load_dataset("truthful_qa", "generation", split="validation")
+        # `truthful_qa` was the legacy datasets-script identifier. The current
+        # Hub dataset has a namespace, which recent `huggingface_hub` releases
+        # require when resolving the dataset YAML/configuration.
+        dataset = load_dataset("truthfulqa/truthful_qa", "generation", split="validation")
         records = [
             _record(
                 str(i),
@@ -102,4 +105,3 @@ def load_benchmark(name: str, limit: int | None = None) -> list[dict[str, Any]]:
     else:
         raise ValueError("dataset must be one of: truthfulqa, triviaqa, coqa, tydiqa")
     return records if limit is None else records[:limit]
-
