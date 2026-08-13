@@ -179,14 +179,31 @@ class HFActivationModel:
         captured: list[Any] = [None] * len(self._layers())
         handles = []
         last_positions = self._last_non_padding(encoded["attention_mask"])
+        batch_size, sequence_length = encoded["input_ids"].shape
 
         def make_hook(index):
             def hook(_module, _inputs, output):
                 state = output[0] if isinstance(output, tuple) else output
                 positions = last_positions.to(state.device)
-                batch_indices = self.torch.arange(state.shape[0], device=state.device)
+                if state.ndim == 3:
+                    batch_indices = self.torch.arange(batch_size, device=state.device)
+                    selected = state[batch_indices, positions, :]
+                elif state.ndim == 2 and state.shape[0] == batch_size * sequence_length:
+                    # OPT flattens [batch, sequence, hidden] before its fc1/fc2 MLP
+                    # projections, then reshapes it only after fc2 returns. A forward
+                    # hook on fc2 therefore receives [batch * sequence, hidden].
+                    flat_indices = (
+                        self.torch.arange(batch_size, device=state.device) * sequence_length
+                        + positions
+                    )
+                    selected = state[flat_indices, :]
+                else:
+                    raise RuntimeError(
+                        "Unexpected hooked activation shape "
+                        f"{tuple(state.shape)} for batch={batch_size}, sequence={sequence_length}"
+                    )
                 captured[index] = (
-                    state[batch_indices, positions, :].detach().float().cpu().numpy()
+                    selected.detach().float().cpu().numpy()
                 )
 
             return hook
