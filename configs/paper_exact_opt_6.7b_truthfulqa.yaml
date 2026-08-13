@@ -11,7 +11,9 @@ model:
   model_name: facebook/opt-6.7b
   representation: mlp
   dtype: float16
-  device_map: auto
+  # OPT-6.7B in FP16 fits on the allocated 46 GB A40. Force CUDA so
+  # Transformers cannot silently place the model on CPU.
+  device_map: cuda
   load_in_4bit: false
   batch_size: 1
   max_input_tokens: 2048

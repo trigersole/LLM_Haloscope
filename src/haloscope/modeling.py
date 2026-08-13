@@ -44,15 +44,23 @@ class HFActivationModel:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.padding_side = "left"
         self.tokenizer.truncation_side = "left"
+        if config.device_map == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError(
+                    "model.device_map=cuda was requested, but CUDA is unavailable to PyTorch"
+                )
+            device_map: Any = {"": 0}
+        else:
+            device_map = config.device_map
         kwargs: dict[str, Any] = {
-            "device_map": config.device_map,
+            "device_map": device_map,
             "low_cpu_mem_usage": True,
             "trust_remote_code": config.trust_remote_code,
         }
         if config.dtype != "auto":
-            kwargs["torch_dtype"] = getattr(torch, config.dtype)
+            kwargs["dtype"] = getattr(torch, config.dtype)
         else:
-            kwargs["torch_dtype"] = "auto"
+            kwargs["dtype"] = "auto"
         if config.load_in_4bit:
             from transformers import BitsAndBytesConfig
 
@@ -64,6 +72,16 @@ class HFActivationModel:
         self.model = AutoModelForCausalLM.from_pretrained(config.model_name, **kwargs)
         self.model.eval()
         self.input_device = self._input_device()
+        print(
+            f"Loaded {config.model_name} on {self.input_device}; "
+            f"CUDA allocated={torch.cuda.memory_allocated(0) / 2**30:.2f} GiB"
+            if torch.cuda.is_available()
+            else f"Loaded {config.model_name} on {self.input_device}; CUDA unavailable"
+        )
+        if config.device_map == "cuda" and self.input_device.type != "cuda":
+            raise RuntimeError(
+                f"OPT was required on CUDA but loaded on {self.input_device}"
+            )
 
     def _input_device(self):
         device = getattr(self.model, "device", None)
