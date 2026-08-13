@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "haloscope-reimplementation"
+version = "0.1.0"
+description = "A clean, reproducible implementation of HaloScope (NeurIPS 2024)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+llm = [
+  "torch>=2.1",
+  "transformers>=4.41",
+  "datasets>=2.19",
+  "accelerate>=0.30",
+  "safetensors>=0.4",
+  "sentencepiece>=0.2",
+  "tqdm>=4.66",
+]
+bleurt = ["bleurt-pytorch @ git+https://github.com/lucadiliello/bleurt-pytorch.git"]
+quantization = ["bitsandbytes>=0.43; platform_system != 'Windows'"]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+haloscope = "haloscope.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

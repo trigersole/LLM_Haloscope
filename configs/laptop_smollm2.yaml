@@ -1,0 +1,43 @@
+# Small end-to-end check for a normal laptop (about a 270 MB model download).
+seed: 41
+work_dir: outputs/laptop_smollm2_truthfulqa
+checkpoint_every: 10
+
+dataset:
+  name: truthfulqa
+  limit: 120
+
+model:
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
+  representation: block
+  dtype: float32
+  device_map: auto
+  load_in_4bit: false
+  batch_size: 1
+  max_input_tokens: 512
+  max_new_tokens: 32
+  num_beams: 1
+
+labeling:
+  # Fast and dependency-free. BLEURT is used by the main paper table.
+  metric: rouge_l
+  threshold: 0.5
+
+split:
+  wild_ratio: 0.75
+  validation_size: 20
+
+search:
+  k_values: [1, 2, 3]
+  threshold_quantiles: [0.2, 0.4, 0.6, 0.8]
+  layers: null
+  probe_layers: null
+  weighted: true
+  center: true
+  orientation: auto
+
+probe:
+  backend: logistic
+  epochs: 20
+  seed: 41
+

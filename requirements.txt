@@ -1,0 +1,3 @@
+# Remote/full experiment dependencies. For laptop-only algorithm tests, use:
+#   pip install -e .
+-e .[llm,bleurt]
