@@ -20,6 +20,9 @@ class ProbeConfig:
     weight_decay: float = 3e-4
     seed: int = 41
     device: str = "auto"
+    cosine_eta_min_factor: float = 0.0
+    seed_each_fit: bool = True
+    schedule_mode: str = "pytorch"
 
 
 class TruthfulnessProbe(Protocol):
@@ -168,16 +171,23 @@ class TorchMLPProbe:
     def fit(self, x: np.ndarray, y: np.ndarray) -> "TorchMLPProbe":
         x, y = _validate_training_data(x, y)
         torch = self._torch()
-        torch.manual_seed(self.config.seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(self.config.seed)
+        if self.config.schedule_mode not in {"pytorch", "official"}:
+            raise ValueError("schedule_mode must be pytorch or official")
+        if self.config.seed_each_fit:
+            torch.manual_seed(self.config.seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(self.config.seed)
         self.input_dim = x.shape[1]
         self.device_ = self._resolve_device(torch)
         self.model = self._new_model(torch, self.input_dim).to(self.device_)
         dataset = torch.utils.data.TensorDataset(
             torch.from_numpy(x), torch.from_numpy(y.astype(np.float32))
         )
-        generator = torch.Generator().manual_seed(self.config.seed)
+        generator = (
+            torch.Generator().manual_seed(self.config.seed)
+            if self.config.seed_each_fit
+            else None
+        )
         loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=min(self.config.batch_size, len(dataset)),
@@ -190,11 +200,22 @@ class TorchMLPProbe:
             momentum=0.9,
             weight_decay=self.config.weight_decay,
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=max(1, self.config.epochs)
-        )
+        scheduler = None
+        if self.config.schedule_mode == "pytorch":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=max(1, self.config.epochs),
+                eta_min=self.config.learning_rate * self.config.cosine_eta_min_factor,
+            )
         loss_fn = torch.nn.BCEWithLogitsLoss()
-        for _ in range(self.config.epochs):
+        for epoch in range(self.config.epochs):
+            if self.config.schedule_mode == "official":
+                eta_min = self.config.learning_rate * self.config.cosine_eta_min_factor
+                rate = eta_min + (self.config.learning_rate - eta_min) * (
+                    1.0 + np.cos(np.pi * (epoch + 1) / self.config.epochs)
+                ) / 2.0
+                for group in optimizer.param_groups:
+                    group["lr"] = float(rate)
             self.model.train()
             for features, labels in loader:
                 features = features.to(self.device_)
@@ -204,7 +225,8 @@ class TorchMLPProbe:
                 loss = loss_fn(logits, labels)
                 loss.backward()
                 optimizer.step()
-            scheduler.step()
+            if scheduler is not None:
+                scheduler.step()
         return self
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray:

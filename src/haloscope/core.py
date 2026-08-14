@@ -40,6 +40,9 @@ class SubspaceConfig:
     n_components: int = 5
     weighted: bool = True
     center: bool = True
+    score_centered: bool = True
+    score_mode: str = "equation7"
+    deterministic_component_sign: bool = False
 
 
 class LatentSubspace:
@@ -57,6 +60,8 @@ class LatentSubspace:
 
     def fit(self, embeddings: np.ndarray) -> "LatentSubspace":
         x = _matrix(embeddings)
+        if self.config.score_mode not in {"equation7", "official"}:
+            raise ValueError("score_mode must be equation7 or official")
         max_components = min(x.shape)
         if not 1 <= self.config.n_components <= max_components:
             raise ValueError(
@@ -66,6 +71,14 @@ class LatentSubspace:
         self.mean_ = x.mean(axis=0) if self.config.center else np.zeros(x.shape[1])
         centered = x - self.mean_
         _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
+        if self.config.deterministic_component_sign:
+            # Match sklearn PCA's svd_flip(..., u_based_decision=False), used
+            # by the released implementation. Sign matters because its score
+            # averages component projections before taking an absolute value.
+            maxima = np.argmax(np.abs(vh), axis=1)
+            signs = np.sign(vh[np.arange(vh.shape[0]), maxima])
+            signs[signs == 0] = 1
+            vh *= signs[:, None]
         k = self.config.n_components
         self.components_ = vh[:k].copy()
         self.singular_values_ = singular_values[:k].copy()
@@ -79,12 +92,17 @@ class LatentSubspace:
                 f"embeddings must have shape [samples, {self.components_.shape[1]}], "
                 f"got {x.shape}"
             )
-        return (x - self.mean_) @ self.components_.T
+        origin = self.mean_ if self.config.score_centered else 0.0
+        return (x - origin) @ self.components_.T
 
     def score(self, embeddings: np.ndarray) -> np.ndarray:
         """Return zeta; larger values are the paper's hallucination candidates."""
         projected = self.transform(embeddings)
         weights = self.singular_values_ if self.config.weighted else np.ones(projected.shape[1])
+        if self.config.score_mode == "official":
+            # Released code weights each projected coordinate, averages the
+            # coordinates, then takes the magnitude of that scalar.
+            return np.abs(np.mean(projected * weights[None, :], axis=1))
         return np.mean(projected**2 * weights[None, :], axis=1)
 
     def save(self, path: str | Path) -> None:
@@ -99,6 +117,11 @@ class LatentSubspace:
             n_components=np.array(self.config.n_components),
             weighted=np.array(int(self.config.weighted)),
             center=np.array(int(self.config.center)),
+            score_centered=np.array(int(self.config.score_centered)),
+            score_mode=np.array(self.config.score_mode),
+            deterministic_component_sign=np.array(
+                int(self.config.deterministic_component_sign)
+            ),
         )
 
     @classmethod
@@ -108,6 +131,19 @@ class LatentSubspace:
                 n_components=int(state["n_components"]),
                 weighted=bool(state["weighted"]),
                 center=bool(state["center"]),
+                score_centered=(
+                    bool(state["score_centered"]) if "score_centered" in state else True
+                ),
+                score_mode=(
+                    str(state["score_mode"].item())
+                    if "score_mode" in state
+                    else "equation7"
+                ),
+                deterministic_component_sign=(
+                    bool(state["deterministic_component_sign"])
+                    if "deterministic_component_sign" in state
+                    else False
+                ),
             )
             model = cls(config)
             model.mean_ = state["mean"].astype(np.float64)
@@ -118,4 +154,3 @@ class LatentSubspace:
     def _require_fitted(self) -> None:
         if not self.fitted:
             raise RuntimeError("LatentSubspace must be fitted before use")
-

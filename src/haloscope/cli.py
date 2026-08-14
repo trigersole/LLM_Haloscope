@@ -59,6 +59,16 @@ def command_generate(config: dict) -> None:
         print(f"Generation already complete ({len(completed)} samples)")
         return
 
+    seed = int(config.get("seed", 41))
+    np.random.seed(seed)
+    try:
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    except ImportError:
+        pass
     model = HFActivationModel(_model_config(config))
     checkpoint_every = int(config.get("checkpoint_every", 10))
     for start in range(len(completed), len(examples), checkpoint_every):
@@ -83,6 +93,7 @@ def command_label(config: dict) -> None:
             options.get("model_name", "lucadiliello/BLEURT-20"),
             batch_size=int(options.get("batch_size", 16)),
             device=options.get("device", "auto"),
+            input_order=options.get("input_order", "reference_candidate"),
         )
     else:
         raise ValueError("labeling.metric must be rouge_l or bleurt")

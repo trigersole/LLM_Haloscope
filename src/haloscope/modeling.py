@@ -30,6 +30,7 @@ class HFActivationModel:
             raise ValueError("representation must be block, mlp, or attention")
         try:
             import torch
+            import transformers
             from transformers import AutoModelForCausalLM, AutoTokenizer
         except ImportError as exc:
             raise RuntimeError(
@@ -58,9 +59,13 @@ class HFActivationModel:
             "trust_remote_code": config.trust_remote_code,
         }
         if config.dtype != "auto":
-            kwargs["dtype"] = getattr(torch, config.dtype)
+            # The authors used Transformers 4.42.3, whose public argument is
+            # torch_dtype. Newer v4 releases renamed it to dtype.
+            major, minor = (int(value) for value in transformers.__version__.split(".")[:2])
+            key = "torch_dtype" if (major, minor) < (4, 56) else "dtype"
+            kwargs[key] = getattr(torch, config.dtype)
         else:
-            kwargs["dtype"] = "auto"
+            kwargs["torch_dtype"] = "auto"
         if config.load_in_4bit:
             from transformers import BitsAndBytesConfig
 

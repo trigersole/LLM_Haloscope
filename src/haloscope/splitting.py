@@ -31,17 +31,21 @@ def make_split(
         raise ValueError("at least 6 samples are required")
     if not 0.5 <= wild_ratio < 1:
         raise ValueError("wild_ratio must be in [0.5, 1)")
-    permutation = np.random.default_rng(seed).permutation(n_samples)
+    # The released implementation calls np.random.seed(seed) followed by
+    # np.random.permutation.  RandomState preserves that legacy MT19937 stream;
+    # default_rng uses PCG64 and therefore produces a different paper split.
+    permutation = np.random.RandomState(seed).permutation(n_samples)
     wild_and_validation_count = int(wild_ratio * n_samples)
     validation_size = min(validation_size, max(1, wild_and_validation_count // 3))
     wild_count = wild_and_validation_count - validation_size
     if wild_count < 2:
         raise ValueError("split leaves fewer than two unlabeled wild samples")
+    # Official code uses the permutation only to decide membership, then walks
+    # the original dataset in index order when constructing each partition.
     result = DataSplit(
-        wild=permutation[:wild_count],
-        validation=permutation[wild_count:wild_and_validation_count],
-        test=permutation[wild_and_validation_count:],
+        wild=np.sort(permutation[:wild_count]),
+        validation=np.sort(permutation[wild_count:wild_and_validation_count]),
+        test=np.sort(permutation[wild_and_validation_count:]),
     )
     result.validate(n_samples)
     return result
-

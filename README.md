@@ -99,6 +99,8 @@ Available full profiles:
 |---|---|---|---|
 | `paper_exact_llama2_7b_truthfulqa.yaml` | LLaMA-2-7B-Chat | block output | gated |
 | `paper_exact_opt_6.7b_truthfulqa.yaml` | OPT-6.7B | MLP output | open |
+| `official_llama2_7b_truthfulqa.yaml` | LLaMA-2-7B-Chat | authors' released-code settings | gated |
+| `official_opt_6.7b_truthfulqa.yaml` | OPT-6.7B | authors' released-code settings | open |
 
 ### Slurm cluster
 

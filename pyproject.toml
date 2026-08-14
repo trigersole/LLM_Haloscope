@@ -19,10 +19,10 @@ llm = [
   # BLEURT's maintained PyTorch port uses a Transformers v4 internal API.
   # Transformers v5 removed that API, so full (BLEURT) experiments must stay on v4.
   "transformers>=4.41,<5",
-  "datasets>=2.19",
-  "accelerate>=0.30",
+  "datasets>=2.17.1",
+  "accelerate>=0.27.2",
   "safetensors>=0.4",
-  "sentencepiece>=0.2",
+  "sentencepiece>=0.1.99",
   "tqdm>=4.66",
 ]
 bleurt = ["bleurt-pytorch @ git+https://github.com/lucadiliello/bleurt-pytorch.git"]

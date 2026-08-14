@@ -1,0 +1,68 @@
+# Reproduces the released deeplearning-wisc/haloscope TruthfulQA command.
+# Uses a fresh work directory so earlier reimplementation results are preserved.
+seed: 41
+work_dir: outputs/official_llama2_7b_truthfulqa
+checkpoint_every: 10
+
+dataset:
+  name: truthfulqa
+  limit: null
+
+model:
+  model_name: meta-llama/Llama-2-7b-chat-hf
+  representation: block       # official feat_loc_svd=3
+  dtype: float16
+  device_map: cuda
+  load_in_4bit: false
+  batch_size: 1
+  max_input_tokens: 2048
+  max_new_tokens: 64
+  num_beams: 5
+
+labeling:
+  metric: bleurt
+  model_name: lucadiliello/BLEURT-20
+  threshold: 0.5
+  batch_size: 16
+  device: auto
+  # The released script passes generated answer first and reference second.
+  input_order: candidate_reference
+
+split:
+  wild_ratio: 0.75
+  validation_size: 100
+
+search:
+  k_values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  threshold_quantiles:
+    [0.025641, 0.051282, 0.076923, 0.102564, 0.128205, 0.153846,
+     0.179487, 0.205128, 0.230769, 0.256410, 0.282051, 0.307692,
+     0.333333, 0.358974, 0.384615, 0.410256, 0.435897, 0.461538,
+     0.487179, 0.512821, 0.538462, 0.564103, 0.589744, 0.615385,
+     0.641026, 0.666667, 0.692308, 0.717949, 0.743590, 0.769231,
+     0.794872, 0.820513, 0.846154, 0.871795, 0.897436, 0.923077,
+     0.948718, 0.974359]
+  layers: null
+  probe_layers: null
+  weighted: true
+  center: true                 # sklearn PCA centers while fitting
+  score_centered: false        # released scoring multiplies raw activations
+  score_mode: official         # abs(mean(sigma_j * <x,v_j>))
+  deterministic_component_sign: true # sklearn PCA svd_flip behavior
+  selection_source: validation # released code fits selection PCA on validation
+  quantile_method: official    # sorted_scores[int(n*q)]
+  orientation: auto
+  retrain_selected_probe: true
+
+probe:
+  backend: torch_mlp
+  hidden_dim: 1024
+  epochs: 50
+  batch_size: 512
+  learning_rate: 0.05
+  weight_decay: 0.0003
+  seed: 41
+  device: auto
+  cosine_eta_min_factor: 0.008 # lr_decay_rate (0.2) cubed
+  seed_each_fit: false
+  schedule_mode: official

@@ -19,3 +19,20 @@ def test_subspace_save_round_trip(tmp_path):
     restored = LatentSubspace.load(tmp_path / "state.npz")
     np.testing.assert_allclose(restored.score(x), model.score(x))
 
+
+def test_official_score_matches_released_projection_order():
+    x = np.array([[2.0, 1.0], [-1.0, 3.0], [0.5, -2.0]])
+    model = LatentSubspace(
+        SubspaceConfig(
+            2,
+            weighted=True,
+            center=True,
+            score_centered=False,
+            score_mode="official",
+            deterministic_component_sign=True,
+        )
+    ).fit(x)
+    expected = np.abs(
+        np.mean((x @ model.components_.T) * model.singular_values_[None, :], axis=1)
+    )
+    np.testing.assert_allclose(model.score(x), expected)

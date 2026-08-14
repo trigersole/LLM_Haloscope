@@ -57,6 +57,7 @@ class BleurtScorer:
         *,
         batch_size: int = 16,
         device: str = "auto",
+        input_order: str = "reference_candidate",
     ):
         try:
             import torch
@@ -64,6 +65,9 @@ class BleurtScorer:
             raise RuntimeError("BLEURT scoring requires the [llm] dependencies") from exc
         self.torch = torch
         self.batch_size = batch_size
+        if input_order not in {"reference_candidate", "candidate_reference"}:
+            raise ValueError("input_order must be reference_candidate or candidate_reference")
+        self.input_order = input_order
         self.device = (
             ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
         )
@@ -85,9 +89,16 @@ class BleurtScorer:
         values = []
         for start in range(0, len(predictions), self.batch_size):
             end = start + self.batch_size
+            references_batch = list(references[start:end])
+            predictions_batch = list(predictions[start:end])
+            first, second = (
+                (predictions_batch, references_batch)
+                if self.input_order == "candidate_reference"
+                else (references_batch, predictions_batch)
+            )
             encoded = self.tokenizer(
-                list(references[start:end]),
-                list(predictions[start:end]),
+                first,
+                second,
                 padding=True,
                 truncation=True,
                 max_length=512,

@@ -26,6 +26,12 @@ class SearchConfig:
     probe_layers: tuple[int, ...] | None = None
     weighted: bool = True
     center: bool = True
+    score_centered: bool = True
+    score_mode: str = "equation7"
+    deterministic_component_sign: bool = False
+    selection_source: str = "wild"
+    quantile_method: str = "linear"
+    retrain_selected_probe: bool = False
     # "paper": high zeta is hallucinated; "auto": choose direction using validation labels,
     # reproducing the official code's sign search.
     orientation: str = "paper"
@@ -74,16 +80,29 @@ class HaloScope:
             raise ValueError("validation labels must contain truthful (1) and hallucinated (0) samples")
         if self.search.orientation not in {"paper", "auto"}:
             raise ValueError("orientation must be 'paper' or 'auto'")
+        if self.search.selection_source not in {"wild", "validation"}:
+            raise ValueError("selection_source must be wild or validation")
+        if self.search.quantile_method not in {"linear", "official"}:
+            raise ValueError("quantile_method must be linear or official")
+
+        if self.probe_config.backend == "torch_mlp" and not self.probe_config.seed_each_fit:
+            import torch
+
+            torch.manual_seed(self.probe_config.seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(self.probe_config.seed)
 
         layers = self._indices(self.search.layers, wild.shape[1], "layers")
+        selection = validation if self.search.selection_source == "validation" else wild
         best_direct: tuple[float, int, int, int] | None = None
-        for layer in layers:
-            for k in self.search.k_values:
-                if k > min(wild.shape[0], wild.shape[2]):
+        # Released code iterates k first, then layer; preserve its tie-breaking.
+        for k in self.search.k_values:
+            for layer in layers:
+                if k > min(selection.shape[0], selection.shape[2]):
                     continue
                 candidate = LatentSubspace(
-                    SubspaceConfig(k, weighted=self.search.weighted, center=self.search.center)
-                ).fit(wild[:, layer, :])
+                    self._subspace_config(k)
+                ).fit(selection[:, layer, :])
                 zeta = candidate.score(validation[:, layer, :])
                 sign, auc = self._truth_orientation(zeta, labels)
                 if best_direct is None or auc > best_direct[0]:
@@ -93,7 +112,7 @@ class HaloScope:
 
         direct_auc, subspace_layer, k, sign = best_direct
         self.subspace = LatentSubspace(
-            SubspaceConfig(k, weighted=self.search.weighted, center=self.search.center)
+            self._subspace_config(k)
         ).fit(wild[:, subspace_layer, :])
         wild_truth_score = sign * self.subspace.score(wild[:, subspace_layer, :])
         probe_layers = self._indices(self.search.probe_layers, wild.shape[1], "probe_layers")
@@ -102,7 +121,7 @@ class HaloScope:
         for quantile in self.search.threshold_quantiles:
             if not 0.0 < quantile < 1.0:
                 raise ValueError("threshold quantiles must be strictly between 0 and 1")
-            threshold = float(np.quantile(wild_truth_score, quantile))
+            threshold = self._threshold(wild_truth_score, quantile)
             pseudo_truth = (wild_truth_score > threshold).astype(np.int64)
             if len(np.unique(pseudo_truth)) != 2:
                 continue
@@ -124,7 +143,12 @@ class HaloScope:
         if best_probe is None:
             raise RuntimeError("probe search produced no valid model")
 
-        auc, probe_layer, quantile, threshold, pseudo_truth, self.probe = best_probe
+        auc, probe_layer, quantile, threshold, pseudo_truth, selected_probe = best_probe
+        self.probe = (
+            build_probe(self.probe_config).fit(wild[:, probe_layer, :], pseudo_truth)
+            if self.search.retrain_selected_probe
+            else selected_probe
+        )
         self.summary = FitSummary(
             subspace_layer=subspace_layer,
             probe_layer=probe_layer,
@@ -212,6 +236,23 @@ class HaloScope:
             return -1, paper_auc
         reverse_auc = roc_auc(truth_labels, zeta)
         return (-1, paper_auc) if paper_auc >= reverse_auc else (1, reverse_auc)
+
+    def _subspace_config(self, k: int) -> SubspaceConfig:
+        return SubspaceConfig(
+            k,
+            weighted=self.search.weighted,
+            center=self.search.center,
+            score_centered=self.search.score_centered,
+            score_mode=self.search.score_mode,
+            deterministic_component_sign=self.search.deterministic_component_sign,
+        )
+
+    def _threshold(self, scores: np.ndarray, quantile: float) -> float:
+        if self.search.quantile_method == "official":
+            ordered = np.sort(scores)
+            index = min(int(len(ordered) * quantile), len(ordered) - 1)
+            return float(ordered[index])
+        return float(np.quantile(scores, quantile))
 
     @staticmethod
     def _indices(
