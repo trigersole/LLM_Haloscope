@@ -69,15 +69,15 @@ class BleurtScorer:
         )
         try:
             from bleurt_pytorch import BleurtForSequenceClassification, BleurtTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "BLEURT requires bleurt-pytorch and Transformers v4. "
+                "Run `uv sync --extra llm --extra bleurt` after pulling the latest project, "
+                "or install `transformers>=4.41,<5` and `bleurt-pytorch` explicitly."
+            ) from exc
 
-            self.tokenizer = BleurtTokenizer.from_pretrained(model_name)
-            self.model = BleurtForSequenceClassification.from_pretrained(model_name)
-        except ImportError:
-            # Newer Transformers installations may register the architecture directly.
-            from transformers import AutoModelForSequenceClassification, AutoTokenizer
-
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        self.tokenizer = BleurtTokenizer.from_pretrained(model_name)
+        self.model = BleurtForSequenceClassification.from_pretrained(model_name)
         self.model.to(self.device)
         self.model.eval()
 

@@ -16,7 +16,9 @@ dependencies = [
 [project.optional-dependencies]
 llm = [
   "torch>=2.1",
-  "transformers>=4.41",
+  # BLEURT's maintained PyTorch port uses a Transformers v4 internal API.
+  # Transformers v5 removed that API, so full (BLEURT) experiments must stay on v4.
+  "transformers>=4.41,<5",
   "datasets>=2.19",
   "accelerate>=0.30",
   "safetensors>=0.4",
