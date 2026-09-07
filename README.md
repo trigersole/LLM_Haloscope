@@ -133,6 +133,54 @@ haloscope score \
 The output contains truthfulness and hallucination scores that sum to one. They are detector
 probabilities, not a guarantee of factual correctness.
 
+## Prompt-contrast activation experiment
+
+The prompt-contrast profiles keep answer generation and BLEURT evaluation identical to the
+released-code profiles. For every saved answer, they run two additional forward passes ending at
+`Assessment:`—one asking the model to consider that the answer is factually correct and one asking
+it to consider that it is factually incorrect. No assessment token is generated. The activation used
+by HaloScope is the layer-wise difference `h_correct - h_incorrect`.
+
+Run a fresh LLaMA-2 experiment:
+
+```bash
+haloscope all --config configs/prompt_contrast_llama2_7b_truthfulqa.yaml
+```
+
+OPT-6.7B is available without Meta's gated-model access:
+
+```bash
+haloscope all --config configs/prompt_contrast_opt_6.7b_truthfulqa.yaml
+```
+
+If the corresponding official baseline generations already exist, reuse the exact same answers and
+extract only the prompted activations:
+
+```bash
+haloscope extract \
+  --config configs/prompt_contrast_opt_6.7b_truthfulqa.yaml \
+  --source-config configs/official_opt_6.7b_truthfulqa.yaml
+haloscope label --config configs/prompt_contrast_opt_6.7b_truthfulqa.yaml
+haloscope train --config configs/prompt_contrast_opt_6.7b_truthfulqa.yaml
+haloscope evaluate --config configs/prompt_contrast_opt_6.7b_truthfulqa.yaml
+```
+
+The baseline and prompted results are written to their respective `metrics.json` files. Besides
+`contrastive`, `model.activation_mode` accepts `response` (the existing behavior) and `diagnostic`
+(one pre-verdict factuality prompt). Prompt templates support `{question}`, `{answer}`, `{context}`,
+`{context_block}`, and `{prompt}` placeholders.
+
+When scoring a new answer with a diagnostic or contrastive detector, pass the raw question so the
+assessment prompt matches training:
+
+```bash
+haloscope score \
+  --config configs/prompt_contrast_opt_6.7b_truthfulqa.yaml \
+  --prompt "Answer the question concisely. Q: Who wrote Hamlet? A:" \
+  --question "Who wrote Hamlet?" \
+  --answer "William Shakespeare."
+```
+
 ## Outputs
 
 Each experiment writes:
@@ -142,6 +190,7 @@ outputs/<experiment>/
 ├── examples.jsonl       normalized benchmark
 ├── generations.jsonl    prompts, answers, and references
 ├── embeddings.npy       [samples, layers, hidden_dim]
+├── activation_metadata.json  extraction mode, templates, and source
 ├── labeled.jsonl        validation/evaluation similarity labels
 ├── split.npz            fixed seed-41 indices
 ├── detector/

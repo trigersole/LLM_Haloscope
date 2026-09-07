@@ -94,6 +94,19 @@ sbatch scripts/slurm_haloscope.sbatch evaluate configs/paper_exact_llama2_7b_tru
 Wait for each stage to finish before submitting the next one. Normally the single `all` job is easier
 and prevents accidental ordering mistakes.
 
+To reuse completed official OPT generations for the prompt-contrast experiment, `extract` accepts
+the source configuration as its third argument:
+
+```bash
+sbatch scripts/slurm_haloscope.sbatch extract \
+  configs/prompt_contrast_opt_6.7b_truthfulqa.yaml \
+  configs/official_opt_6.7b_truthfulqa.yaml
+```
+
+After it finishes, submit `label`, `train`, and `evaluate` with the prompt-contrast configuration.
+Extraction checkpoints are resumable when the activation mode, templates, representation, and
+source generation file are unchanged.
+
 ## Common cluster problems
 
 - **`Requested node configuration is not available`:** use the cluster's actual GPU partition,
@@ -106,4 +119,3 @@ and prevents accidental ordering mistakes.
   submitting, for example `sbatch --export=ALL,HF_HOME=/scratch/$USER/huggingface ...`.
 - **LLaMA returns 401/403:** authenticate on the login node and confirm the model license was
   accepted. The token cache must be visible from compute nodes.
-

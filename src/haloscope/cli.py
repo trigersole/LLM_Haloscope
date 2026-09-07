@@ -34,6 +34,24 @@ def _model_config(config: dict) -> ModelConfig:
     return ModelConfig(**values)
 
 
+def _activation_metadata(config: dict) -> dict:
+    model = _model_config(config)
+    return {
+        "activation_mode": model.activation_mode,
+        "representation": model.representation,
+        "diagnostic_template": model.diagnostic_template,
+        "contrastive_positive_template": model.contrastive_positive_template,
+        "contrastive_negative_template": model.contrastive_negative_template,
+        "contrastive_operation": "positive_minus_negative",
+    }
+
+
+def _write_activation_metadata(config: dict, path: Path, source: str) -> None:
+    metadata = {**_activation_metadata(config), "source": source}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+
 def command_prepare(config: dict) -> None:
     paths = work_paths(config)
     dataset = config.get("dataset", {})
@@ -53,6 +71,17 @@ def command_generate(config: dict) -> None:
         expected = [record["id"] for record in examples[: len(completed)]]
         if [record["id"] for record in completed] != expected:
             raise RuntimeError("generation checkpoint is not a prefix of examples.jsonl")
+        if paths["activation_metadata"].exists():
+            recorded = json.loads(paths["activation_metadata"].read_text(encoding="utf-8"))
+            expected_metadata = _activation_metadata(config)
+            mismatched = [
+                key for key, value in expected_metadata.items() if recorded.get(key) != value
+            ]
+            if mismatched:
+                raise RuntimeError(
+                    "saved embeddings use different activation settings "
+                    f"({', '.join(mismatched)}); run the extract command to rebuild them"
+                )
     else:
         activations = []
     if len(completed) == len(examples):
@@ -78,7 +107,54 @@ def command_generate(config: dict) -> None:
         activations.extend(new_activations)
         write_jsonl(paths["generations"], completed)
         _atomic_numpy(paths["embeddings"], np.asarray(activations, dtype=np.float32))
+        _write_activation_metadata(config, paths["activation_metadata"], "generation")
         print(f"Checkpoint: {len(completed)}/{len(examples)} generations")
+
+
+def command_extract(config: dict, source_config: dict | None = None) -> None:
+    """Rebuild activations from saved answers, optionally into a new experiment."""
+    paths = work_paths(config)
+    source_paths = work_paths(source_config) if source_config is not None else paths
+    records = read_jsonl(source_paths["generations"])
+    if not records:
+        raise RuntimeError("no saved generations are available for extraction")
+    if source_paths["generations"] != paths["generations"]:
+        write_jsonl(paths["generations"], records)
+        if source_paths["examples"].exists():
+            write_jsonl(paths["examples"], read_jsonl(source_paths["examples"]))
+
+    source_name = str(source_paths["generations"].resolve())
+    expected_metadata = {**_activation_metadata(config), "source": source_name}
+    activations = []
+    if paths["embeddings"].exists() and paths["activation_metadata"].exists():
+        recorded = json.loads(paths["activation_metadata"].read_text(encoding="utf-8"))
+        if all(recorded.get(key) == value for key, value in expected_metadata.items()):
+            saved = np.load(paths["embeddings"])
+            if len(saved) > len(records):
+                raise RuntimeError("saved embeddings contain more records than generations")
+            activations = list(saved)
+
+    model_config = _model_config(config)
+    batch_size = max(1, model_config.batch_size)
+    checkpoint_every = max(batch_size, int(config.get("checkpoint_every", 10)))
+    last_checkpoint = len(activations)
+    if last_checkpoint == len(records):
+        print(f"Extraction already complete ({len(records)} samples)")
+        return
+    model = HFActivationModel(model_config)
+    for start in range(last_checkpoint, len(records), batch_size):
+        batch = records[start : start + batch_size]
+        activations.extend(model.extract_records(batch))
+        completed = start + len(batch)
+        if completed - last_checkpoint >= checkpoint_every or completed == len(records):
+            _atomic_numpy(paths["embeddings"], np.asarray(activations, dtype=np.float32))
+            _write_activation_metadata(
+                config,
+                paths["activation_metadata"],
+                source_name,
+            )
+            last_checkpoint = completed
+            print(f"Extraction checkpoint: {completed}/{len(records)}")
 
 
 def command_label(config: dict) -> None:
@@ -151,10 +227,25 @@ def command_evaluate(config: dict) -> dict[str, float]:
     return metrics
 
 
-def command_score(config: dict, prompt: str, answer: str) -> None:
+def command_score(
+    config: dict,
+    prompt: str,
+    answer: str,
+    question: str | None = None,
+    context: str | None = None,
+) -> None:
     paths = work_paths(config)
     model = HFActivationModel(_model_config(config))
-    embedding = model.extract([prompt + answer])
+    embedding = model.extract_records(
+        [
+            {
+                "prompt": prompt,
+                "question": question if question is not None else prompt,
+                "context": context,
+                "answer": answer,
+            }
+        ]
+    )
     probability = float(HaloScope.load(paths["detector"]).predict_truthfulness(embedding)[0])
     print(json.dumps({"truthfulness": probability, "hallucination": 1.0 - probability}, indent=2))
 
@@ -196,10 +287,24 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("prepare", "generate", "label", "train", "evaluate", "all"):
         child = subparsers.add_parser(command)
         child.add_argument("--config", required=True, help="YAML experiment configuration")
+    extract = subparsers.add_parser("extract")
+    extract.add_argument("--config", required=True, help="target experiment configuration")
+    extract.add_argument(
+        "--source-config",
+        help="optional experiment config whose saved generations should be reused",
+    )
     score = subparsers.add_parser("score")
     score.add_argument("--config", required=True)
     score.add_argument("--prompt", required=True)
     score.add_argument("--answer", required=True)
+    score.add_argument(
+        "--question",
+        help="raw question used by diagnostic/contrastive activation prompts",
+    )
+    score.add_argument(
+        "--context",
+        help="optional source context used by diagnostic/contrastive activation prompts",
+    )
     smoke = subparsers.add_parser("smoke")
     smoke.add_argument("--output", help="optional detector output directory")
     return parser
@@ -219,7 +324,10 @@ def main() -> None:
         "evaluate": command_evaluate,
     }
     if args.command == "score":
-        command_score(config, args.prompt, args.answer)
+        command_score(config, args.prompt, args.answer, args.question, args.context)
+    elif args.command == "extract":
+        source_config = load_config(args.source_config) if args.source_config else None
+        command_extract(config, source_config)
     elif args.command == "all":
         for name in ("prepare", "generate", "label", "train", "evaluate"):
             commands[name](config)

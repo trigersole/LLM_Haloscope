@@ -15,9 +15,11 @@ set -euo pipefail
 # Usage:
 #   sbatch scripts/slurm_haloscope.sbatch
 #   sbatch scripts/slurm_haloscope.sbatch all configs/paper_exact_opt_6.7b_truthfulqa.yaml
-# The first argument may also be prepare, generate, label, train, or evaluate.
+# The first argument may also be prepare, generate, extract, label, train, or evaluate.
+# For extract, an optional third argument is the source experiment config.
 STAGE="${1:-all}"
 CONFIG="${2:-configs/paper_exact_opt_6.7b_truthfulqa.yaml}"
+SOURCE_CONFIG="${3:-}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 
 cd "$PROJECT_DIR"
@@ -108,4 +110,8 @@ MONITOR_PID=$!
 trap cleanup EXIT
 trap on_term TERM
 
-srun --ntasks=1 python -u -m haloscope.cli "$STAGE" --config "$CONFIG"
+EXTRA_ARGS=()
+if [[ "$STAGE" == "extract" && -n "$SOURCE_CONFIG" ]]; then
+    EXTRA_ARGS+=(--source-config "$SOURCE_CONFIG")
+fi
+srun --ntasks=1 python -u -m haloscope.cli "$STAGE" --config "$CONFIG" "${EXTRA_ARGS[@]}"

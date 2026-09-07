@@ -38,9 +38,9 @@ def work_paths(config: dict[str, Any]) -> dict[str, Path]:
         "examples": root / "examples.jsonl",
         "generations": root / "generations.jsonl",
         "embeddings": root / "embeddings.npy",
+        "activation_metadata": root / "activation_metadata.json",
         "labeled": root / "labeled.jsonl",
         "detector": root / "detector",
         "split": root / "split.npz",
         "metrics": root / "metrics.json",
     }
-

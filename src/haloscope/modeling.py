@@ -8,6 +8,25 @@ from typing import Any
 import numpy as np
 
 
+DEFAULT_DIAGNOSTIC_TEMPLATE = """{context_block}Question: {question}
+Proposed answer: {answer}
+
+Consider whether the proposed answer is factually correct.
+Assessment:"""
+
+DEFAULT_CONTRASTIVE_POSITIVE_TEMPLATE = """{context_block}Question: {question}
+Proposed answer: {answer}
+
+Consider whether the proposed answer is factually correct.
+Assessment:"""
+
+DEFAULT_CONTRASTIVE_NEGATIVE_TEMPLATE = """{context_block}Question: {question}
+Proposed answer: {answer}
+
+Consider whether the proposed answer is factually incorrect.
+Assessment:"""
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     model_name: str
@@ -20,6 +39,37 @@ class ModelConfig:
     max_input_tokens: int = 2048
     max_new_tokens: int = 64
     num_beams: int = 5
+    # response: the paper's prompt+generated-answer final-token representation.
+    # diagnostic: the pre-verdict state of one factuality assessment prompt.
+    # contrastive: positive-prompt state minus negative-prompt state.
+    activation_mode: str = "response"
+    diagnostic_template: str = DEFAULT_DIAGNOSTIC_TEMPLATE
+    contrastive_positive_template: str = DEFAULT_CONTRASTIVE_POSITIVE_TEMPLATE
+    contrastive_negative_template: str = DEFAULT_CONTRASTIVE_NEGATIVE_TEMPLATE
+
+
+def render_activation_prompt(template: str, record: dict) -> str:
+    """Render a diagnostic prompt without asking the model to generate a verdict."""
+    if "answer" not in record:
+        raise ValueError("diagnostic activation extraction requires an answer")
+    context = str(record.get("context") or "").strip()
+    values = {
+        "question": str(record.get("question") or "").strip(),
+        "answer": str(record["answer"]).strip(),
+        "context": context,
+        "context_block": f"Context: {context}\n" if context else "",
+        "prompt": str(record.get("prompt") or ""),
+    }
+    try:
+        rendered = template.format_map(values)
+    except KeyError as exc:
+        allowed = ", ".join(sorted(values))
+        raise ValueError(
+            f"unknown activation-prompt placeholder {exc.args[0]!r}; allowed: {allowed}"
+        ) from exc
+    if not rendered.strip():
+        raise ValueError("activation prompt rendered to an empty string")
+    return rendered
 
 
 class HFActivationModel:
@@ -28,6 +78,10 @@ class HFActivationModel:
     def __init__(self, config: ModelConfig):
         if config.representation not in {"block", "mlp", "attention"}:
             raise ValueError("representation must be block, mlp, or attention")
+        if config.activation_mode not in {"response", "diagnostic", "contrastive"}:
+            raise ValueError(
+                "activation_mode must be response, diagnostic, or contrastive"
+            )
         try:
             import torch
             import transformers
@@ -151,15 +205,49 @@ class HFActivationModel:
         for start in range(0, len(records), size):
             batch = records[start : start + size]
             answers = self.generate([record["prompt"] for record in batch])
-            texts = [
-                record["prompt"] + answer for record, answer in zip(batch, answers, strict=True)
-            ]
-            activations.append(self.extract(texts))
-            completed.extend(
+            completed_batch = [
                 {**record, "answer": answer.strip()}
                 for record, answer in zip(batch, answers, strict=True)
-            )
+            ]
+            activations.append(self.extract_records(completed_batch))
+            completed.extend(completed_batch)
         return completed, np.concatenate(activations, axis=0)
+
+    def extract_records(self, records: list[dict]) -> np.ndarray:
+        """Extract configured response, diagnostic, or contrastive activations."""
+        if not records:
+            raise ValueError("at least one record is required for activation extraction")
+        mode = self.config.activation_mode
+        if mode == "response":
+            texts = []
+            for record in records:
+                if "prompt" not in record or "answer" not in record:
+                    raise ValueError("response activation extraction needs prompt and answer")
+                texts.append(str(record["prompt"]) + str(record["answer"]))
+            return self.extract(texts)
+        if mode == "diagnostic":
+            texts = [
+                render_activation_prompt(self.config.diagnostic_template, record)
+                for record in records
+            ]
+            return self.extract(texts)
+
+        positive_texts = [
+            render_activation_prompt(self.config.contrastive_positive_template, record)
+            for record in records
+        ]
+        negative_texts = [
+            render_activation_prompt(self.config.contrastive_negative_template, record)
+            for record in records
+        ]
+        positive = self.extract(positive_texts)
+        negative = self.extract(negative_texts)
+        if positive.shape != negative.shape:
+            raise RuntimeError(
+                "contrastive prompt activations have different shapes: "
+                f"{positive.shape} vs {negative.shape}"
+            )
+        return (positive - negative).astype(np.float32, copy=False)
 
     def _last_non_padding(self, attention_mask):
         positions = self.torch.arange(
