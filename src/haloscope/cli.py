@@ -36,7 +36,7 @@ def _model_config(config: dict) -> ModelConfig:
 
 def _activation_metadata(config: dict) -> dict:
     model = _model_config(config)
-    return {
+    metadata = {
         "activation_mode": model.activation_mode,
         "representation": model.representation,
         "diagnostic_template": model.diagnostic_template,
@@ -44,6 +44,18 @@ def _activation_metadata(config: dict) -> dict:
         "contrastive_negative_template": model.contrastive_negative_template,
         "contrastive_operation": "positive_minus_negative",
     }
+    # Do not change metadata for the original modes: existing checkpoints must
+    # remain resumable and exactly reproducible after trajectory support is added.
+    if model.activation_mode == "trajectory":
+        metadata["trajectory_checkpoints"] = list(model.trajectory_checkpoints)
+        metadata["trajectory_features"] = [
+            "prompt_state",
+            *[f"delta_after_{value}_answer_tokens" for value in model.trajectory_checkpoints],
+            "final_state_minus_prompt_state",
+        ]
+    elif model.activation_mode == "endpoint_delta":
+        metadata["endpoint_delta_operation"] = "final_state_minus_prompt_state"
+    return metadata
 
 
 def _write_activation_metadata(config: dict, path: Path, source: str) -> None:

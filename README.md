@@ -181,6 +181,42 @@ haloscope score \
   --answer "William Shakespeare."
 ```
 
+## Pre-generation and trajectory activation experiments
+
+The additional activation modes leave every original mode and configuration unchanged:
+
+- `prompt` extracts the state at the final token of the original prompt, before answer decoding.
+- `endpoint_delta` uses `h_final - h_prompt`.
+- `trajectory` concatenates `h_prompt`, changes from that state after configurable answer-token
+  checkpoints, and `h_final - h_prompt`. With checkpoints `[1, 4, 8]`, its per-layer feature width
+  is five times the model hidden size.
+
+The supplied OPT trajectory profile writes to its own directory. Reuse the official run's exact
+answers, then run the existing HaloScope labeling and detector stages:
+
+```bash
+haloscope extract \
+  --config configs/trajectory_opt_6.7b_truthfulqa.yaml \
+  --source-config configs/official_opt_6.7b_truthfulqa.yaml
+haloscope label --config configs/trajectory_opt_6.7b_truthfulqa.yaml
+haloscope train --config configs/trajectory_opt_6.7b_truthfulqa.yaml
+haloscope evaluate --config configs/trajectory_opt_6.7b_truthfulqa.yaml
+```
+
+The same extraction can be submitted through Slurm:
+
+```bash
+sbatch scripts/slurm_haloscope.sbatch extract \
+  configs/trajectory_opt_6.7b_truthfulqa.yaml \
+  configs/official_opt_6.7b_truthfulqa.yaml
+```
+
+Trajectory extraction performs one prompt pass, one full-response pass, and one pass per configured
+checkpoint. It is therefore slower than the final-token baseline but keeps peak memory similar when
+`model.batch_size` is one. To run the prompt-only or endpoint-delta ablation, copy the trajectory
+profile to a new filename and `work_dir`, then change `activation_mode`; never point two activation
+experiments at the same work directory.
+
 ## Outputs
 
 Each experiment writes:

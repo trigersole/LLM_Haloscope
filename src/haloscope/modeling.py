@@ -7,7 +7,6 @@ from typing import Any
 
 import numpy as np
 
-
 DEFAULT_DIAGNOSTIC_TEMPLATE = """{context_block}Question: {question}
 Proposed answer: {answer}
 
@@ -42,10 +41,14 @@ class ModelConfig:
     # response: the paper's prompt+generated-answer final-token representation.
     # diagnostic: the pre-verdict state of one factuality assessment prompt.
     # contrastive: positive-prompt state minus negative-prompt state.
+    # prompt: the pre-generation state at the end of the original prompt.
+    # endpoint_delta: response final state minus the prompt final state.
+    # trajectory: prompt state plus answer-prefix/final changes from that state.
     activation_mode: str = "response"
     diagnostic_template: str = DEFAULT_DIAGNOSTIC_TEMPLATE
     contrastive_positive_template: str = DEFAULT_CONTRASTIVE_POSITIVE_TEMPLATE
     contrastive_negative_template: str = DEFAULT_CONTRASTIVE_NEGATIVE_TEMPLATE
+    trajectory_checkpoints: tuple[int, ...] = (1, 4, 8)
 
 
 def render_activation_prompt(template: str, record: dict) -> str:
@@ -78,9 +81,28 @@ class HFActivationModel:
     def __init__(self, config: ModelConfig):
         if config.representation not in {"block", "mlp", "attention"}:
             raise ValueError("representation must be block, mlp, or attention")
-        if config.activation_mode not in {"response", "diagnostic", "contrastive"}:
+        supported_modes = {
+            "response",
+            "diagnostic",
+            "contrastive",
+            "prompt",
+            "endpoint_delta",
+            "trajectory",
+        }
+        if config.activation_mode not in supported_modes:
             raise ValueError(
-                "activation_mode must be response, diagnostic, or contrastive"
+                "activation_mode must be response, diagnostic, contrastive, prompt, "
+                "endpoint_delta, or trajectory"
+            )
+        self.trajectory_checkpoints = tuple(int(value) for value in config.trajectory_checkpoints)
+        if (
+            not self.trajectory_checkpoints
+            or any(value < 1 for value in self.trajectory_checkpoints)
+            or tuple(sorted(set(self.trajectory_checkpoints))) != self.trajectory_checkpoints
+        ):
+            raise ValueError(
+                "trajectory_checkpoints must be a non-empty, sorted list of unique "
+                "positive token counts"
             )
         try:
             import torch
@@ -214,7 +236,7 @@ class HFActivationModel:
         return completed, np.concatenate(activations, axis=0)
 
     def extract_records(self, records: list[dict]) -> np.ndarray:
-        """Extract configured response, diagnostic, or contrastive activations."""
+        """Extract the configured endpoint or decoding-trajectory representation."""
         if not records:
             raise ValueError("at least one record is required for activation extraction")
         mode = self.config.activation_mode
@@ -225,6 +247,44 @@ class HFActivationModel:
                     raise ValueError("response activation extraction needs prompt and answer")
                 texts.append(str(record["prompt"]) + str(record["answer"]))
             return self.extract(texts)
+        if mode in {"prompt", "endpoint_delta", "trajectory"}:
+            prompts, answers = self._prompt_answer_texts(records)
+            prompt_states = self.extract(prompts)
+            if mode == "prompt":
+                return prompt_states
+
+            response_texts = [
+                prompt + answer for prompt, answer in zip(prompts, answers, strict=True)
+            ]
+            final_states = self.extract(response_texts)
+            if mode == "endpoint_delta":
+                return (final_states - prompt_states).astype(np.float32, copy=False)
+
+            # Keep a fixed feature width for every sample. Each checkpoint is the
+            # change from the pre-generation state after observing its first k
+            # answer tokens. The final delta captures the completed response.
+            pieces = [prompt_states]
+            tokenized_answers = [
+                self.tokenizer.encode(answer, add_special_tokens=False) for answer in answers
+            ]
+            for checkpoint in self.trajectory_checkpoints:
+                prefix_texts = []
+                for prompt, answer, token_ids in zip(
+                    prompts, answers, tokenized_answers, strict=True
+                ):
+                    if checkpoint >= len(token_ids):
+                        prefix = answer
+                    else:
+                        prefix = self.tokenizer.decode(
+                            token_ids[:checkpoint],
+                            skip_special_tokens=True,
+                            clean_up_tokenization_spaces=False,
+                        )
+                    prefix_texts.append(prompt + prefix)
+                checkpoint_states = self.extract(prefix_texts)
+                pieces.append(checkpoint_states - prompt_states)
+            pieces.append(final_states - prompt_states)
+            return np.concatenate(pieces, axis=2).astype(np.float32, copy=False)
         if mode == "diagnostic":
             texts = [
                 render_activation_prompt(self.config.diagnostic_template, record)
@@ -248,6 +308,19 @@ class HFActivationModel:
                 f"{positive.shape} vs {negative.shape}"
             )
         return (positive - negative).astype(np.float32, copy=False)
+
+    @staticmethod
+    def _prompt_answer_texts(records: list[dict]) -> tuple[list[str], list[str]]:
+        prompts = []
+        answers = []
+        for record in records:
+            if "prompt" not in record or "answer" not in record:
+                raise ValueError(
+                    "prompt, endpoint_delta, and trajectory extraction need prompt and answer"
+                )
+            prompts.append(str(record["prompt"]))
+            answers.append(str(record["answer"]))
+        return prompts, answers
 
     def _last_non_padding(self, attention_mask):
         positions = self.torch.arange(
