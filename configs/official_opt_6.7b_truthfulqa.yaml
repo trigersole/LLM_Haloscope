@@ -47,6 +47,8 @@ search:
   score_centered: false
   score_mode: official
   deterministic_component_sign: true
+  factorization_backend: sklearn_auto
+  replay_official_numpy_rng: true
   selection_source: validation
   quantile_method: official
   orientation: auto
@@ -64,3 +66,4 @@ probe:
   cosine_eta_min_factor: 0.008
   seed_each_fit: false
   schedule_mode: official
+  group_by_label: true

@@ -216,7 +216,13 @@ def command_train(config: dict) -> None:
         raise RuntimeError("embeddings and labeled records have different sample counts")
     labels = np.asarray([record["truth_label"] for record in records], dtype=np.int64)
     split = _load_or_make_split(config, len(records), paths["split"])
-    detector = HaloScope(search_config(config), probe_config(config)).fit(
+    search = search_config(config)
+    if search.replay_official_numpy_rng:
+        # The released process seeds NumPy once, generates this permutation, and
+        # then lets sklearn PCA(random_state=None) consume the advanced stream.
+        np.random.seed(int(config.get("seed", 41)))
+        np.random.permutation(len(records))
+    detector = HaloScope(search, probe_config(config)).fit(
         embeddings[split.wild],
         embeddings[split.validation],
         labels[split.validation],

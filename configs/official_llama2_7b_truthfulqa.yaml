@@ -49,6 +49,8 @@ search:
   score_centered: false        # released scoring multiplies raw activations
   score_mode: official         # abs(mean(sigma_j * <x,v_j>))
   deterministic_component_sign: true # sklearn PCA svd_flip behavior
+  factorization_backend: sklearn_auto # released PCA(..., svd_solver="auto")
+  replay_official_numpy_rng: true      # split permutation advances PCA RNG
   selection_source: validation # released code fits selection PCA on validation
   quantile_method: official    # sorted_scores[int(n*q)]
   orientation: auto
@@ -66,3 +68,4 @@ probe:
   cosine_eta_min_factor: 0.008 # lr_decay_rate (0.2) cubed
   seed_each_fit: false
   schedule_mode: official
+  group_by_label: true          # released code concatenates pseudo classes

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import pickle
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
-import pickle
 
 import numpy as np
 
@@ -23,12 +23,13 @@ class ProbeConfig:
     cosine_eta_min_factor: float = 0.0
     seed_each_fit: bool = True
     schedule_mode: str = "pytorch"
+    group_by_label: bool = False
 
 
 class TruthfulnessProbe(Protocol):
     config: ProbeConfig
 
-    def fit(self, x: np.ndarray, y: np.ndarray) -> "TruthfulnessProbe": ...
+    def fit(self, x: np.ndarray, y: np.ndarray) -> TruthfulnessProbe: ...
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray: ...
 
@@ -71,7 +72,7 @@ class LogisticProbe:
         self.weights_: np.ndarray | None = None
         self.bias_: float = 0.0
 
-    def fit(self, x: np.ndarray, y: np.ndarray) -> "LogisticProbe":
+    def fit(self, x: np.ndarray, y: np.ndarray) -> LogisticProbe:
         x, y = _validate_training_data(x, y)
         self.mean_ = x.mean(axis=0)
         self.scale_ = x.std(axis=0)
@@ -117,7 +118,7 @@ class LogisticProbe:
             )
 
     @classmethod
-    def load(cls, path: str | Path) -> "LogisticProbe":
+    def load(cls, path: str | Path) -> LogisticProbe:
         with Path(path).open("rb") as handle:
             state = pickle.load(handle)
         result = cls(ProbeConfig(**state["config"]))
@@ -168,8 +169,13 @@ class TorchMLPProbe:
             torch.nn.Linear(self.config.hidden_dim, 1),
         )
 
-    def fit(self, x: np.ndarray, y: np.ndarray) -> "TorchMLPProbe":
+    def fit(self, x: np.ndarray, y: np.ndarray) -> TorchMLPProbe:
         x, y = _validate_training_data(x, y)
+        if self.config.group_by_label:
+            # Released HaloScope concatenates pseudo-truthful examples followed
+            # by pseudo-hallucinated examples before constructing its loader.
+            order = np.concatenate((np.flatnonzero(y == 1), np.flatnonzero(y == 0)))
+            x, y = x[order], y[order]
         torch = self._torch()
         if self.config.schedule_mode not in {"pytorch", "official"}:
             raise ValueError("schedule_mode must be pytorch or official")
@@ -252,7 +258,7 @@ class TorchMLPProbe:
         )
 
     @classmethod
-    def load(cls, path: str | Path) -> "TorchMLPProbe":
+    def load(cls, path: str | Path) -> TorchMLPProbe:
         temporary = cls(ProbeConfig())
         torch = temporary._torch()
         state = torch.load(path, map_location="cpu", weights_only=True)

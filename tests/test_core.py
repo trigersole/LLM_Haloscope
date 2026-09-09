@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from haloscope.core import LatentSubspace, SubspaceConfig
 
@@ -36,3 +37,33 @@ def test_official_score_matches_released_projection_order():
         np.mean((x @ model.components_.T) * model.singular_values_[None, :], axis=1)
     )
     np.testing.assert_allclose(model.score(x), expected)
+
+
+def test_sklearn_backend_matches_float32_sklearn_pca():
+    sklearn = pytest.importorskip("sklearn.decomposition")
+    rng = np.random.RandomState(7)
+    x = rng.normal(size=(32, 12)).astype(np.float32)
+
+    np.random.seed(19)
+    expected = sklearn.PCA(
+        n_components=4, whiten=False, svd_solver="auto", random_state=None
+    ).fit(x)
+    np.random.seed(19)
+    actual = LatentSubspace(
+        SubspaceConfig(
+            n_components=4,
+            weighted=True,
+            score_centered=False,
+            score_mode="official",
+            factorization_backend="sklearn_auto",
+        )
+    ).fit(x)
+
+    np.testing.assert_allclose(actual.mean_, expected.mean_)
+    np.testing.assert_allclose(actual.components_, expected.components_)
+    np.testing.assert_allclose(actual.singular_values_, expected.singular_values_)
+    projected = x @ expected.components_.T
+    expected_scores = np.abs(
+        np.mean(projected * expected.singular_values_[None, :], axis=1)
+    )
+    np.testing.assert_allclose(actual.score(x), expected_scores)

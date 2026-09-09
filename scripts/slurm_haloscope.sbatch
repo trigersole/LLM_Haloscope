@@ -35,6 +35,17 @@ fi
 
 source .venv/bin/activate
 
+# Optional dependency overlay for released-code parity. This lets the official
+# profile reuse an isolated sklearn/Transformers stack without modifying .venv.
+if [[ -n "${HALOSCOPE_DEPENDENCY_OVERLAY:-}" ]]; then
+    if [[ ! -d "$HALOSCOPE_DEPENDENCY_OVERLAY" ]]; then
+        echo "Dependency overlay does not exist: $HALOSCOPE_DEPENDENCY_OVERLAY"
+        exit 2
+    fi
+    export PYTHONPATH="$HALOSCOPE_DEPENDENCY_OVERLAY:$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+    echo "Dependency overlay: $HALOSCOPE_DEPENDENCY_OVERLAY"
+fi
+
 # Keep downloads and experiment state on persistent storage, not node-local scratch.
 export HF_HOME="${HF_HOME:-$PROJECT_DIR/.cache/huggingface}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"

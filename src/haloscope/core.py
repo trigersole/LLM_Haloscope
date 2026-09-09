@@ -43,6 +43,7 @@ class SubspaceConfig:
     score_centered: bool = True
     score_mode: str = "equation7"
     deterministic_component_sign: bool = False
+    factorization_backend: str = "numpy_full"
 
 
 class LatentSubspace:
@@ -58,8 +59,20 @@ class LatentSubspace:
     def fitted(self) -> bool:
         return self.components_ is not None
 
-    def fit(self, embeddings: np.ndarray) -> "LatentSubspace":
-        x = _matrix(embeddings)
+    def fit(self, embeddings: np.ndarray) -> LatentSubspace:
+        if self.config.factorization_backend not in {"numpy_full", "sklearn_auto"}:
+            raise ValueError(
+                "factorization_backend must be numpy_full or sklearn_auto"
+            )
+        # The released code feeds float32 activation arrays to sklearn PCA.  Keep
+        # that dtype for operational parity; the equation-focused implementation
+        # retains float64 NumPy SVD for numerical stability.
+        dtype = (
+            np.float32
+            if self.config.factorization_backend == "sklearn_auto"
+            else np.float64
+        )
+        x = _matrix(embeddings).astype(dtype, copy=False)
         if self.config.score_mode not in {"equation7", "official"}:
             raise ValueError("score_mode must be equation7 or official")
         max_components = min(x.shape)
@@ -68,10 +81,32 @@ class LatentSubspace:
                 f"n_components must be in [1, {max_components}], "
                 f"got {self.config.n_components}"
             )
-        self.mean_ = x.mean(axis=0) if self.config.center else np.zeros(x.shape[1])
-        centered = x - self.mean_
-        _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
-        if self.config.deterministic_component_sign:
+        if self.config.factorization_backend == "sklearn_auto":
+            if not self.config.center:
+                raise ValueError("sklearn_auto reproduces centered sklearn PCA only")
+            try:
+                from sklearn.decomposition import PCA
+            except ImportError as exc:
+                raise RuntimeError(
+                    "factorization_backend=sklearn_auto requires scikit-learn"
+                ) from exc
+            pca = PCA(
+                n_components=self.config.n_components,
+                whiten=False,
+                svd_solver="auto",
+                random_state=None,
+            ).fit(x)
+            self.mean_ = pca.mean_.copy()
+            vh = pca.components_.copy()
+            singular_values = pca.singular_values_.copy()
+        else:
+            self.mean_ = x.mean(axis=0) if self.config.center else np.zeros(x.shape[1])
+            centered = x - self.mean_
+            _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
+        if (
+            self.config.factorization_backend == "numpy_full"
+            and self.config.deterministic_component_sign
+        ):
             # Match sklearn PCA's svd_flip(..., u_based_decision=False), used
             # by the released implementation. Sign matters because its score
             # averages component projections before taking an absolute value.
@@ -86,7 +121,7 @@ class LatentSubspace:
 
     def transform(self, embeddings: np.ndarray) -> np.ndarray:
         self._require_fitted()
-        x = np.asarray(embeddings, dtype=np.float64)
+        x = np.asarray(embeddings, dtype=self.components_.dtype)
         if x.ndim != 2 or x.shape[1] != self.components_.shape[1]:
             raise ValueError(
                 f"embeddings must have shape [samples, {self.components_.shape[1]}], "
@@ -122,10 +157,11 @@ class LatentSubspace:
             deterministic_component_sign=np.array(
                 int(self.config.deterministic_component_sign)
             ),
+            factorization_backend=np.array(self.config.factorization_backend),
         )
 
     @classmethod
-    def load(cls, path: str | Path) -> "LatentSubspace":
+    def load(cls, path: str | Path) -> LatentSubspace:
         with np.load(path) as state:
             config = SubspaceConfig(
                 n_components=int(state["n_components"]),
@@ -144,11 +180,18 @@ class LatentSubspace:
                     if "deterministic_component_sign" in state
                     else False
                 ),
+                factorization_backend=(
+                    str(state["factorization_backend"].item())
+                    if "factorization_backend" in state
+                    else "numpy_full"
+                ),
             )
             model = cls(config)
-            model.mean_ = state["mean"].astype(np.float64)
-            model.components_ = state["components"].astype(np.float64)
-            model.singular_values_ = state["singular_values"].astype(np.float64)
+            # Preserve float32 for released-code parity. Upcasting the saved
+            # sklearn PCA arrays here changes the raw projection calculation.
+            model.mean_ = state["mean"].copy()
+            model.components_ = state["components"].copy()
+            model.singular_values_ = state["singular_values"].copy()
         return model
 
     def _require_fitted(self) -> None:

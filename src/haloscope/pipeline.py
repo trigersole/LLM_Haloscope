@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 
@@ -29,6 +29,8 @@ class SearchConfig:
     score_centered: bool = True
     score_mode: str = "equation7"
     deterministic_component_sign: bool = False
+    factorization_backend: str = "numpy_full"
+    replay_official_numpy_rng: bool = False
     selection_source: str = "wild"
     quantile_method: str = "linear"
     retrain_selected_probe: bool = False
@@ -70,7 +72,7 @@ class HaloScope:
         wild_embeddings: np.ndarray,
         validation_embeddings: np.ndarray,
         validation_truth_labels: np.ndarray,
-    ) -> "HaloScope":
+    ) -> HaloScope:
         wild = validate_layerwise(wild_embeddings, "wild_embeddings")
         validation = validate_layerwise(validation_embeddings, "validation_embeddings")
         labels = np.asarray(validation_truth_labels, dtype=np.int64).reshape(-1)
@@ -190,7 +192,7 @@ class HaloScope:
             "direct_projection_auroc": roc_auc(
                 labels, self.direct_truthfulness(embeddings)
             ),
-            "n_samples": int(len(labels)),
+            "n_samples": len(labels),
         }
 
     def save(self, directory: str | Path) -> None:
@@ -212,7 +214,7 @@ class HaloScope:
         )
 
     @classmethod
-    def load(cls, directory: str | Path) -> "HaloScope":
+    def load(cls, directory: str | Path) -> HaloScope:
         directory = Path(directory)
         metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
         search_data = metadata["search"]
@@ -245,6 +247,7 @@ class HaloScope:
             score_centered=self.search.score_centered,
             score_mode=self.search.score_mode,
             deterministic_component_sign=self.search.deterministic_component_sign,
+            factorization_backend=self.search.factorization_backend,
         )
 
     def _threshold(self, scores: np.ndarray, quantile: float) -> float:
