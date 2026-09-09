@@ -44,6 +44,11 @@ def _activation_metadata(config: dict) -> dict:
         "contrastive_negative_template": model.contrastive_negative_template,
         "contrastive_operation": "positive_minus_negative",
     }
+    if model.answer_truncation_markers or not model.strip_generated_answer:
+        metadata["answer_truncation_markers"] = list(model.answer_truncation_markers)
+        metadata["strip_generated_answer"] = model.strip_generated_answer
+    if model.attn_implementation is not None:
+        metadata["attn_implementation"] = model.attn_implementation
     # Do not change metadata for the original modes: existing checkpoints must
     # remain resumable and exactly reproducible after trajectory support is added.
     if model.activation_mode == "trajectory":
@@ -91,8 +96,8 @@ def command_generate(config: dict) -> None:
             ]
             if mismatched:
                 raise RuntimeError(
-                    "saved embeddings use different activation settings "
-                    f"({', '.join(mismatched)}); run the extract command to rebuild them"
+                    "saved generation/embeddings use different settings "
+                    f"({', '.join(mismatched)}); use a fresh work_dir to regenerate them"
                 )
     else:
         activations = []

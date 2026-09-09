@@ -51,6 +51,24 @@ def test_response_extraction_preserves_existing_behavior():
     assert captured == ["Q: Who wrote Hamlet? A:William Shakespeare."]
 
 
+def test_official_truthfulqa_answer_postprocessing_truncates_repeated_prompt():
+    model = HFActivationModel.__new__(HFActivationModel)
+    model.config = ModelConfig(
+        model_name="unused",
+        answer_truncation_markers=("Answer the question concisely",),
+        strip_generated_answer=False,
+    )
+    answer = "William Shakespeare.\n\nAnswer the question concisely. Q: Next? A:"
+    assert model._postprocess_generated_answer(answer) == "William Shakespeare.\n\n"
+
+
+def test_default_answer_postprocessing_strips_but_does_not_truncate():
+    model = HFActivationModel.__new__(HFActivationModel)
+    model.config = ModelConfig(model_name="unused")
+    answer = "  Answer the question concisely.  "
+    assert model._postprocess_generated_answer(answer) == answer.strip()
+
+
 def test_prompt_extraction_uses_only_original_prompt():
     model = HFActivationModel.__new__(HFActivationModel)
     model.config = ModelConfig(model_name="unused", activation_mode="prompt")

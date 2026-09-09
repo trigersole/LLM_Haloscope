@@ -1,7 +1,7 @@
 # Reproduces the released deeplearning-wisc/haloscope TruthfulQA command.
 # Uses a fresh work directory so earlier reimplementation results are preserved.
 seed: 41
-work_dir: outputs/official_llama2_7b_truthfulqa
+work_dir: outputs/official_parity_v2_llama2_7b_truthfulqa
 checkpoint_every: 10
 
 dataset:
@@ -14,10 +14,15 @@ model:
   dtype: float16
   device_map: cuda
   load_in_4bit: false
+  attn_implementation: eager # released llama_iti code uses explicit attention math
   batch_size: 1
   max_input_tokens: 2048
   max_new_tokens: 64
   num_beams: 5
+  # Released code truncates a repeated TruthfulQA instruction and preserves
+  # decoded whitespace in the saved answer.
+  answer_truncation_markers: ["Answer the question concisely"]
+  strip_generated_answer: false
 
 labeling:
   metric: bleurt

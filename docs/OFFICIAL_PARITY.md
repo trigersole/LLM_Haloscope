@@ -9,6 +9,9 @@ Implemented parity points:
 - partitions rebuilt in original dataset order after membership selection;
 - prompt `Answer the question concisely. Q: {question} A:`;
 - five-beam deterministic generation with 64 new tokens;
+- eager attention, matching the explicit attention computation in released `llama_iti`;
+- released TruthfulQA cleanup of repeated `Answer the question concisely` text,
+  including preservation of the decoded answer's trailing whitespace;
 - final-token transformer-block representations (`feat_loc_svd=3`);
 - BLEURT threshold 0.5 and the released candidate/reference input order;
 - validation-fitted PCA for selecting layer, component count, and sign;
@@ -25,15 +28,16 @@ Compare a completed run with artifacts produced by the authors' repository:
 
 ```bash
 python scripts/audit_official_parity.py \
-  --ours outputs/official_llama2_7b_truthfulqa \
+  --ours outputs/official_parity_v2_llama2_7b_truthfulqa \
   --official /home/msai/$USER/haloscope-official \
-  --output outputs/official_llama2_7b_truthfulqa/parity_audit.json
+  --output outputs/official_parity_v2_llama2_7b_truthfulqa/parity_audit.json
 ```
 
 The audit checks exact generated answers, BLEURT scores and threshold labels, split
-membership, and every aligned transformer-block embedding layer. Run it before comparing
-selected hyperparameters or final AUROC; the first divergent upstream artifact explains all
-downstream differences.
+membership, and every aligned transformer-block embedding layer. BLEURT and embedding
+differences are also reported separately for identical-answer and different-answer subsets.
+Run it before comparing selected hyperparameters or final AUROC; the first divergent upstream
+artifact explains all downstream differences.
 
 To reuse an isolated official dependency overlay on Slurm without changing this project's
 virtual environment:
@@ -45,8 +49,9 @@ sbatch \
   train configs/official_llama2_7b_truthfulqa.yaml
 ```
 
-Use fresh output directories because older embeddings, labels, and splits were generated
-under different choices:
+Use a fresh `work_dir` because older answers and embeddings were saved before the released
+answer cleanup was implemented. The supplied v2 profiles already point to new directories;
+do not change them back to an old generation checkpoint.
 
 ```bash
 sbatch scripts/slurm_haloscope.sbatch all configs/official_llama2_7b_truthfulqa.yaml

@@ -34,10 +34,16 @@ class ModelConfig:
     device_map: str = "auto"
     load_in_4bit: bool = False
     trust_remote_code: bool = False
+    attn_implementation: str | None = None
     batch_size: int = 1
     max_input_tokens: int = 2048
     max_new_tokens: int = 64
     num_beams: int = 5
+    # The released TruthfulQA code removes a newly generated copy of its prompt
+    # instruction before saving/scoring the answer. Empty by default so other
+    # datasets retain their complete decoded output.
+    answer_truncation_markers: tuple[str, ...] = ()
+    strip_generated_answer: bool = True
     # response: the paper's prompt+generated-answer final-token representation.
     # diagnostic: the pre-verdict state of one factuality assessment prompt.
     # contrastive: positive-prompt state minus negative-prompt state.
@@ -134,6 +140,8 @@ class HFActivationModel:
             "low_cpu_mem_usage": True,
             "trust_remote_code": config.trust_remote_code,
         }
+        if config.attn_implementation is not None:
+            kwargs["attn_implementation"] = config.attn_implementation
         if config.dtype != "auto":
             # The authors used Transformers 4.42.3, whose public argument is
             # torch_dtype. Newer v4 releases renamed it to dtype.
@@ -228,12 +236,19 @@ class HFActivationModel:
             batch = records[start : start + size]
             answers = self.generate([record["prompt"] for record in batch])
             completed_batch = [
-                {**record, "answer": answer.strip()}
+                {**record, "answer": self._postprocess_generated_answer(answer)}
                 for record, answer in zip(batch, answers, strict=True)
             ]
             activations.append(self.extract_records(completed_batch))
             completed.extend(completed_batch)
         return completed, np.concatenate(activations, axis=0)
+
+    def _postprocess_generated_answer(self, answer: str) -> str:
+        """Apply configured dataset-specific cleanup to decoded model output."""
+        for marker in self.config.answer_truncation_markers:
+            if marker in answer:
+                answer = answer.split(marker, maxsplit=1)[0]
+        return answer.strip() if self.config.strip_generated_answer else answer
 
     def extract_records(self, records: list[dict]) -> np.ndarray:
         """Extract the configured endpoint or decoding-trajectory representation."""

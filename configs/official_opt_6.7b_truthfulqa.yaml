@@ -1,6 +1,6 @@
 # Reproduces the released deeplearning-wisc/haloscope TruthfulQA command.
 seed: 41
-work_dir: outputs/official_opt_6.7b_truthfulqa
+work_dir: outputs/official_parity_v2_opt_6.7b_truthfulqa
 checkpoint_every: 10
 
 dataset:
@@ -13,10 +13,13 @@ model:
   dtype: float16
   device_map: cuda
   load_in_4bit: false
+  attn_implementation: eager
   batch_size: 1
   max_input_tokens: 2048
   max_new_tokens: 64
   num_beams: 5
+  answer_truncation_markers: ["Answer the question concisely"]
+  strip_generated_answer: false
 
 labeling:
   metric: bleurt

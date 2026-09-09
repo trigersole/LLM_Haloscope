@@ -189,6 +189,34 @@ def compare_embeddings(ours: Path, official: Path, model: str, dataset: str) -> 
         result["shape_match"] = False
         return result
     result["shape_match"] = True
+    generations = read_jsonl(ours / "generations.jsonl")
+    exact_answers = np.zeros(len(ours_values), dtype=bool)
+    stripped_answers = np.zeros(len(ours_values), dtype=bool)
+    official_available = np.zeros(len(ours_values), dtype=bool)
+    for index, row in enumerate(generations[: len(ours_values)]):
+        path = official_answer_path(official, model, dataset, index)
+        if not path.exists():
+            continue
+        values = np.load(path, allow_pickle=True).reshape(-1)
+        official_answer = "" if len(values) == 0 else str(values[0])
+        official_available[index] = True
+        exact_answers[index] = row["answer"] == official_answer
+        stripped_answers[index] = row["answer"].strip() == official_answer.strip()
+    subset_masks = {
+        "exactly_identical_answers": exact_answers,
+        "stripped_identical_answers": stripped_answers,
+        "different_answers": official_available & ~stripped_answers,
+    }
+    subset_totals = {
+        name: {
+            "count": int(mask.sum()),
+            "absolute_sum": 0.0,
+            "value_count": 0,
+            "max_abs_difference": 0.0,
+            "minimum_layer_mean_cosine": float("inf"),
+        }
+        for name, mask in subset_masks.items()
+    }
     layers = []
     total_absolute = 0.0
     total_values = 0
@@ -201,6 +229,19 @@ def compare_embeddings(ours: Path, official: Path, model: str, dataset: str) -> 
         right_norm = np.linalg.norm(right, axis=1)
         denominator = np.maximum(left_norm * right_norm, 1e-30)
         cosine = np.sum(left * right, axis=1) / denominator
+        for name, mask in subset_masks.items():
+            if not mask.any():
+                continue
+            selected_difference = difference[mask]
+            subset = subset_totals[name]
+            subset["absolute_sum"] += float(selected_difference.sum())
+            subset["value_count"] += selected_difference.size
+            subset["max_abs_difference"] = max(
+                subset["max_abs_difference"], float(selected_difference.max())
+            )
+            subset["minimum_layer_mean_cosine"] = min(
+                subset["minimum_layer_mean_cosine"], float(cosine[mask].mean())
+            )
         layer_max = float(difference.max())
         overall_max = max(overall_max, layer_max)
         total_absolute += float(difference.sum())
@@ -223,6 +264,25 @@ def compare_embeddings(ours: Path, official: Path, model: str, dataset: str) -> 
             "layers": layers,
         }
     )
+    result["comparison_by_answer_match"] = {
+        name: {
+            "count": values["count"],
+            "max_abs_difference": (
+                values["max_abs_difference"] if values["value_count"] else None
+            ),
+            "mean_abs_difference": (
+                values["absolute_sum"] / values["value_count"]
+                if values["value_count"]
+                else None
+            ),
+            "minimum_layer_mean_cosine": (
+                values["minimum_layer_mean_cosine"]
+                if values["value_count"]
+                else None
+            ),
+        }
+        for name, values in subset_totals.items()
+    }
     return result
 
 
