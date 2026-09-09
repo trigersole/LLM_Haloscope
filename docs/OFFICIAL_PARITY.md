@@ -49,6 +49,10 @@ sbatch \
   train configs/official_llama2_7b_truthfulqa.yaml
 ```
 
+For an `all` job, the launcher deliberately runs dataset preparation before enabling the
+overlay. This prevents an older overlay copy of `datasets` from reading cache metadata written
+by a newer release; generation, labeling, training, and evaluation then use the overlay.
+
 Use a fresh `work_dir` because older answers and embeddings were saved before the released
 answer cleanup was implemented. The supplied v2 profiles already point to new directories;
 do not change them back to an old generation checkpoint.

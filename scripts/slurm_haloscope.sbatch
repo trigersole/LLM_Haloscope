@@ -37,14 +37,21 @@ source .venv/bin/activate
 
 # Optional dependency overlay for released-code parity. This lets the official
 # profile reuse an isolated sklearn/Transformers stack without modifying .venv.
+BASE_PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$BASE_PYTHONPATH"
 if [[ -n "${HALOSCOPE_DEPENDENCY_OVERLAY:-}" ]]; then
     if [[ ! -d "$HALOSCOPE_DEPENDENCY_OVERLAY" ]]; then
         echo "Dependency overlay does not exist: $HALOSCOPE_DEPENDENCY_OVERLAY"
         exit 2
     fi
-    export PYTHONPATH="$HALOSCOPE_DEPENDENCY_OVERLAY:$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
-    echo "Dependency overlay: $HALOSCOPE_DEPENDENCY_OVERLAY"
 fi
+
+enable_dependency_overlay() {
+    if [[ -n "${HALOSCOPE_DEPENDENCY_OVERLAY:-}" ]]; then
+        export PYTHONPATH="$HALOSCOPE_DEPENDENCY_OVERLAY:$BASE_PYTHONPATH"
+        echo "Dependency overlay enabled: $HALOSCOPE_DEPENDENCY_OVERLAY"
+    fi
+}
 
 # Keep downloads and experiment state on persistent storage, not node-local scratch.
 export HF_HOME="${HF_HOME:-$PROJECT_DIR/.cache/huggingface}"
@@ -125,4 +132,24 @@ EXTRA_ARGS=()
 if [[ "$STAGE" == "extract" && -n "$SOURCE_CONFIG" ]]; then
     EXTRA_ARGS+=(--source-config "$SOURCE_CONFIG")
 fi
-srun --ntasks=1 python -u -m haloscope.cli "$STAGE" --config "$CONFIG" "${EXTRA_ARGS[@]}"
+
+# Dataset cache metadata is not forward-compatible with every older `datasets`
+# release in an official dependency overlay. Preparation is not numerically
+# parity-sensitive, so always run it with the project's normal environment.
+if [[ "$STAGE" == "all" && -n "${HALOSCOPE_DEPENDENCY_OVERLAY:-}" ]]; then
+    echo "Preparing dataset with the project environment (overlay disabled)"
+    srun --ntasks=1 python -u -m haloscope.cli prepare --config "$CONFIG"
+    enable_dependency_overlay
+    for PIPELINE_STAGE in generate label train evaluate; do
+        echo "Running stage with dependency overlay: $PIPELINE_STAGE"
+        srun --ntasks=1 python -u -m haloscope.cli "$PIPELINE_STAGE" --config "$CONFIG"
+    done
+else
+    if [[ "$STAGE" != "prepare" ]]; then
+        enable_dependency_overlay
+    elif [[ -n "${HALOSCOPE_DEPENDENCY_OVERLAY:-}" ]]; then
+        echo "Dependency overlay intentionally disabled for dataset preparation"
+    fi
+    srun --ntasks=1 python -u -m haloscope.cli \
+        "$STAGE" --config "$CONFIG" "${EXTRA_ARGS[@]}"
+fi
