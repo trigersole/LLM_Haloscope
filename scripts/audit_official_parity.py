@@ -30,6 +30,7 @@ def compare_answers(ours: Path, official: Path, model: str, dataset: str) -> dic
     mismatches = []
     missing = []
     equal = 0
+    stripped_equal = 0
     for index, row in enumerate(generations):
         path = official_answer_path(official, model, dataset, index)
         if not path.exists():
@@ -39,6 +40,18 @@ def compare_answers(ours: Path, official: Path, model: str, dataset: str) -> dic
         official_answer = "" if len(values) == 0 else str(values[0])
         if row["answer"] == official_answer:
             equal += 1
+            stripped_equal += 1
+        elif row["answer"].strip() == official_answer.strip():
+            stripped_equal += 1
+            if len(mismatches) < 20:
+                mismatches.append(
+                    {
+                        "index": index,
+                        "difference": "surrounding_whitespace_only",
+                        "ours": row["answer"],
+                        "official": official_answer,
+                    }
+                )
         elif len(mismatches) < 20:
             mismatches.append(
                 {
@@ -52,12 +65,30 @@ def compare_answers(ours: Path, official: Path, model: str, dataset: str) -> dic
         "official_found": len(generations) - len(missing),
         "exact_matches": equal,
         "exact_match_rate": equal / len(generations) if generations else None,
+        "stripped_match_rate": (
+            stripped_equal / len(generations) if generations else None
+        ),
         "first_missing_indices": missing[:20],
         "first_mismatches": mismatches,
     }
 
 
-def compare_labels(ours: Path, official: Path, dataset: str, threshold: float) -> dict:
+def _score_difference(scores: np.ndarray, mask: np.ndarray) -> dict:
+    selected = scores[mask]
+    return {
+        "count": int(mask.sum()),
+        "max_abs_score_difference": float(selected.max()) if len(selected) else None,
+        "mean_abs_score_difference": float(selected.mean()) if len(selected) else None,
+    }
+
+
+def compare_labels(
+    ours: Path,
+    official: Path,
+    model: str,
+    dataset: str,
+    threshold: float,
+) -> dict:
     ours_path = ours / "labeled.jsonl"
     official_path = official / f"ml_{dataset}_bleurt_score.npy"
     if not ours_path.exists() or not official_path.exists():
@@ -71,6 +102,17 @@ def compare_labels(ours: Path, official: Path, dataset: str, threshold: float) -
     official_scores = np.asarray(np.load(official_path), dtype=np.float64).reshape(-1)
     count = min(len(ours_scores), len(official_scores))
     difference = np.abs(ours_scores[:count] - official_scores[:count])
+    generations = read_jsonl(ours / "generations.jsonl")
+    identical_answers = np.zeros(count, dtype=bool)
+    stripped_identical_answers = np.zeros(count, dtype=bool)
+    for index, row in enumerate(generations[:count]):
+        path = official_answer_path(official, model, dataset, index)
+        if not path.exists():
+            continue
+        values = np.load(path, allow_pickle=True).reshape(-1)
+        official_answer = "" if len(values) == 0 else str(values[0])
+        identical_answers[index] = row["answer"] == official_answer
+        stripped_identical_answers[index] = row["answer"].strip() == official_answer.strip()
     ours_labels = ours_scores[:count] > threshold
     official_labels = official_scores[:count] > threshold
     disagreements = np.flatnonzero(ours_labels != official_labels)
@@ -85,6 +127,15 @@ def compare_labels(ours: Path, official: Path, dataset: str, threshold: float) -
         "ours_truthful": int(ours_labels.sum()),
         "official_truthful": int(official_labels.sum()),
         "first_label_disagreements": disagreements[:20].tolist(),
+        "score_difference_on_exactly_identical_answers": _score_difference(
+            difference, identical_answers
+        ),
+        "score_difference_on_stripped_identical_answers": _score_difference(
+            difference, stripped_identical_answers
+        ),
+        "score_difference_on_different_answers": _score_difference(
+            difference, ~stripped_identical_answers
+        ),
     }
 
 
@@ -190,7 +241,13 @@ def main() -> None:
     generations = read_jsonl(args.ours / "generations.jsonl")
     report = {
         "answers": compare_answers(args.ours, args.official, args.model, args.dataset),
-        "labels": compare_labels(args.ours, args.official, args.dataset, args.threshold),
+        "labels": compare_labels(
+            args.ours,
+            args.official,
+            args.model,
+            args.dataset,
+            args.threshold,
+        ),
         "split": compare_split(args.ours, len(generations), args.seed, args.wild_ratio),
         "embeddings": compare_embeddings(args.ours, args.official, args.model, args.dataset),
     }
