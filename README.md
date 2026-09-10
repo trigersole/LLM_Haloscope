@@ -4,6 +4,11 @@ This project implements **“HaloScope: Harnessing Unlabeled LLM Generations for
 Detection”** by Du, Xiao, and Li from scratch. It includes the complete paper pipeline, a small
 laptop profile, and resumable remote-GPU scripts for SSH/PuTTY.
 
+The isolated `codex/haloscope-plus` research branch adds confidence-aware
+pseudo-labeling, compact multi-seed probes, fold-stable selection, and endpoint-delta
+experiments. See [the HaloScope++ guide](docs/HALOSCOPE_PLUS.md). Existing configurations
+retain their previous behavior.
+
 - [NeurIPS paper](https://papers.neurips.cc/paper_files/paper/2024/file/ba92705991cfbbcedc26e27e833ebbae-Paper-Conference.pdf)
 - [Authors' reference repository](https://github.com/deeplearning-wisc/haloscope)
 - [Detailed PuTTY guide](docs/PUTTY_REMOTE.md)

@@ -21,7 +21,13 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 def search_config(config: dict[str, Any]) -> SearchConfig:
     values = dict(config.get("search", {}))
-    for key in ("k_values", "threshold_quantiles", "layers", "probe_layers"):
+    for key in (
+        "k_values",
+        "threshold_quantiles",
+        "layers",
+        "probe_layers",
+        "tail_fractions",
+    ):
         if values.get(key) is not None:
             values[key] = tuple(values[key])
     return SearchConfig(**values)

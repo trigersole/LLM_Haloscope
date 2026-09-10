@@ -21,6 +21,15 @@ def test_subspace_save_round_trip(tmp_path):
     np.testing.assert_allclose(restored.score(x), model.score(x))
 
 
+def test_truncated_subspace_matches_direct_fit():
+    rng = np.random.default_rng(19)
+    x = rng.normal(size=(30, 8))
+    full = LatentSubspace(SubspaceConfig(5, weighted=True)).fit(x)
+    truncated = full.truncated(2)
+    direct = LatentSubspace(SubspaceConfig(2, weighted=True)).fit(x)
+    np.testing.assert_allclose(truncated.score(x), direct.score(x))
+
+
 def test_official_score_matches_released_projection_order():
     x = np.array([[2.0, 1.0], [-1.0, 3.0], [0.5, -2.0]])
     model = LatentSubspace(

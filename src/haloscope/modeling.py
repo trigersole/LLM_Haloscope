@@ -48,6 +48,7 @@ class ModelConfig:
     # diagnostic: the pre-verdict state of one factuality assessment prompt.
     # contrastive: positive-prompt state minus negative-prompt state.
     # prompt: the pre-generation state at the end of the original prompt.
+    # answer_mean: mean state over the generated answer's token positions.
     # endpoint_delta: response final state minus the prompt final state.
     # trajectory: prompt state plus answer-prefix/final changes from that state.
     activation_mode: str = "response"
@@ -92,13 +93,14 @@ class HFActivationModel:
             "diagnostic",
             "contrastive",
             "prompt",
+            "answer_mean",
             "endpoint_delta",
             "trajectory",
         }
         if config.activation_mode not in supported_modes:
             raise ValueError(
                 "activation_mode must be response, diagnostic, contrastive, prompt, "
-                "endpoint_delta, or trajectory"
+                "answer_mean, endpoint_delta, or trajectory"
             )
         self.trajectory_checkpoints = tuple(int(value) for value in config.trajectory_checkpoints)
         if (
@@ -243,6 +245,39 @@ class HFActivationModel:
             completed.extend(completed_batch)
         return completed, np.concatenate(activations, axis=0)
 
+    def extract_answer_mean(self, prompts: list[str], answers: list[str]) -> np.ndarray:
+        """Mean-pool each block output over generated-answer token positions."""
+        if self.config.representation != "block":
+            raise ValueError("answer_mean currently requires representation=block")
+        texts = [
+            prompt + answer for prompt, answer in zip(prompts, answers, strict=True)
+        ]
+        encoded = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.config.max_input_tokens + self.config.max_new_tokens,
+            return_tensors="pt",
+        ).to(self.input_device)
+        answer_lengths = [
+            max(1, len(self.tokenizer.encode(answer, add_special_tokens=False)))
+            for answer in answers
+        ]
+        with self.torch.inference_mode():
+            output = self.model(**encoded, output_hidden_states=True, use_cache=False)
+        vectors = []
+        attention_mask = encoded["attention_mask"]
+        for state in output.hidden_states[1:]:
+            pooled = []
+            for index, answer_length in enumerate(answer_lengths):
+                valid = self.torch.flatnonzero(attention_mask[index]).to(state.device)
+                count = min(answer_length, len(valid))
+                pooled.append(state[index, valid[-count:], :].mean(dim=0))
+            vectors.append(
+                self.torch.stack(pooled, dim=0).detach().float().cpu().numpy()
+            )
+        return np.stack(vectors, axis=1).astype(np.float32)
+
     def _postprocess_generated_answer(self, answer: str) -> str:
         """Apply configured dataset-specific cleanup to decoded model output."""
         for marker in self.config.answer_truncation_markers:
@@ -262,6 +297,9 @@ class HFActivationModel:
                     raise ValueError("response activation extraction needs prompt and answer")
                 texts.append(str(record["prompt"]) + str(record["answer"]))
             return self.extract(texts)
+        if mode == "answer_mean":
+            prompts, answers = self._prompt_answer_texts(records)
+            return self.extract_answer_mean(prompts, answers)
         if mode in {"prompt", "endpoint_delta", "trajectory"}:
             prompts, answers = self._prompt_answer_texts(records)
             prompt_states = self.extract(prompts)

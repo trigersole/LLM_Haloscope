@@ -1,0 +1,70 @@
+# HaloScope++ Phase B: re-extract endpoint-delta activations from saved answers.
+seed: 41
+work_dir: outputs/haloscope_plus_endpoint_delta_llama2_7b_truthfulqa
+checkpoint_every: 10
+
+dataset:
+  name: truthfulqa
+  limit: null
+
+model:
+  model_name: meta-llama/Llama-2-7b-chat-hf
+  representation: block
+  activation_mode: endpoint_delta
+  dtype: float16
+  device_map: cuda
+  load_in_4bit: false
+  attn_implementation: eager
+  batch_size: 1
+  max_input_tokens: 2048
+  max_new_tokens: 64
+  num_beams: 5
+  answer_truncation_markers: ["Answer the question concisely"]
+  strip_generated_answer: false
+
+labeling:
+  metric: bleurt
+  model_name: lucadiliello/BLEURT-20
+  threshold: 0.5
+  batch_size: 16
+  device: auto
+  input_order: candidate_reference
+
+split:
+  wild_ratio: 0.75
+  validation_size: 100
+
+search:
+  k_values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  layers: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+  probe_layers: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+  weighted: true
+  center: true
+  score_centered: true
+  score_mode: equation7
+  factorization_backend: numpy_full
+  selection_source: wild
+  orientation: auto
+  pseudo_label_mode: confidence_tails
+  tail_fractions: [0.15, 0.20, 0.25, 0.30, 0.40]
+  confidence_weighted: true
+  probe_repeats: 3
+  validation_folds: 5
+  stability_penalty: 0.25
+  retrain_selected_probe: true
+
+probe:
+  backend: torch_mlp
+  hidden_dim: 128
+  epochs: 100
+  batch_size: 128
+  learning_rate: 0.001
+  weight_decay: 0.001
+  penalty: l2
+  balanced_loss: true
+  dropout: 0.2
+  optimizer: adamw
+  standardize: true
+  device: auto
+  seed: 41
+  seed_each_fit: true

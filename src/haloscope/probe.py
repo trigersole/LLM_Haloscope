@@ -24,12 +24,22 @@ class ProbeConfig:
     seed_each_fit: bool = True
     schedule_mode: str = "pytorch"
     group_by_label: bool = False
+    dropout: float = 0.0
+    penalty: str = "l2"
+    balanced_loss: bool = False
+    optimizer: str = "sgd"
+    standardize: bool = False
 
 
 class TruthfulnessProbe(Protocol):
     config: ProbeConfig
 
-    def fit(self, x: np.ndarray, y: np.ndarray) -> TruthfulnessProbe: ...
+    def fit(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> TruthfulnessProbe: ...
 
     def predict_proba(self, x: np.ndarray) -> np.ndarray: ...
 
@@ -62,6 +72,28 @@ def _validate_training_data(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, n
     return x, y
 
 
+def _training_weights(
+    y: np.ndarray,
+    sample_weight: np.ndarray | None,
+    balanced: bool,
+) -> np.ndarray:
+    if sample_weight is None:
+        weights = np.ones(len(y), dtype=np.float32)
+    else:
+        weights = np.asarray(sample_weight, dtype=np.float32).reshape(-1)
+        if len(weights) != len(y):
+            raise ValueError("sample_weight must have one value per training sample")
+        if not np.isfinite(weights).all() or np.any(weights < 0):
+            raise ValueError("sample_weight must be finite and non-negative")
+        if not np.any(weights > 0):
+            raise ValueError("sample_weight must contain at least one positive value")
+    if balanced:
+        counts = np.bincount(y, minlength=2).astype(np.float64)
+        class_weights = len(y) / (2.0 * counts)
+        weights = weights * class_weights[y]
+    return weights / max(float(weights.mean()), 1e-12)
+
+
 class LogisticProbe:
     """Fast CPU probe for laptop checks; the full profile uses the paper's MLP."""
 
@@ -72,8 +104,16 @@ class LogisticProbe:
         self.weights_: np.ndarray | None = None
         self.bias_: float = 0.0
 
-    def fit(self, x: np.ndarray, y: np.ndarray) -> LogisticProbe:
+    def fit(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> LogisticProbe:
         x, y = _validate_training_data(x, y)
+        if self.config.penalty not in {"l1", "l2"}:
+            raise ValueError("penalty must be l1 or l2")
+        weights = _training_weights(y, sample_weight, self.config.balanced_loss)
         self.mean_ = x.mean(axis=0)
         self.scale_ = x.std(axis=0)
         self.scale_[self.scale_ < 1e-6] = 1.0
@@ -87,12 +127,18 @@ class LogisticProbe:
         for step in range(iterations):
             logits = standardized @ self.weights_ + self.bias_
             probabilities = _sigmoid(logits)
-            error = probabilities - targets
-            decay = self.config.weight_decay * self.weights_
-            gradient = standardized.T @ error / len(x) + decay
-            bias_gradient = float(error.mean())
+            error = weights * (probabilities - targets)
+            gradient = standardized.T @ error / weights.sum()
+            if self.config.penalty == "l2":
+                gradient += self.config.weight_decay * self.weights_
+            bias_gradient = float(error.sum() / weights.sum())
             rate = learning_rate * 0.5 * (1.0 + np.cos(np.pi * step / iterations))
             self.weights_ -= rate * gradient
+            if self.config.penalty == "l1":
+                shrinkage = rate * self.config.weight_decay
+                self.weights_ = np.sign(self.weights_) * np.maximum(
+                    np.abs(self.weights_) - shrinkage, 0.0
+                )
             self.bias_ -= rate * bias_gradient
         return self
 
@@ -147,6 +193,8 @@ class TorchMLPProbe:
         self.model = None
         self.input_dim: int | None = None
         self.device_: str | None = None
+        self.mean_: np.ndarray | None = None
+        self.scale_: np.ndarray | None = None
 
     def _torch(self):
         try:
@@ -163,19 +211,40 @@ class TorchMLPProbe:
         return "cuda" if torch.cuda.is_available() else "cpu"
 
     def _new_model(self, torch, input_dim: int):
-        return torch.nn.Sequential(
+        layers = [
             torch.nn.Linear(input_dim, self.config.hidden_dim),
             torch.nn.ReLU(),
-            torch.nn.Linear(self.config.hidden_dim, 1),
-        )
+        ]
+        if self.config.dropout:
+            if not 0.0 <= self.config.dropout < 1.0:
+                raise ValueError("dropout must be in [0, 1)")
+            layers.append(torch.nn.Dropout(self.config.dropout))
+        layers.append(torch.nn.Linear(self.config.hidden_dim, 1))
+        return torch.nn.Sequential(*layers)
 
-    def fit(self, x: np.ndarray, y: np.ndarray) -> TorchMLPProbe:
+    def fit(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> TorchMLPProbe:
         x, y = _validate_training_data(x, y)
+        if self.config.penalty != "l2":
+            raise ValueError("torch_mlp currently supports penalty=l2 only")
+        if self.config.optimizer not in {"sgd", "adamw"}:
+            raise ValueError("optimizer must be sgd or adamw")
+        weights = _training_weights(y, sample_weight, self.config.balanced_loss)
         if self.config.group_by_label:
             # Released HaloScope concatenates pseudo-truthful examples followed
             # by pseudo-hallucinated examples before constructing its loader.
             order = np.concatenate((np.flatnonzero(y == 1), np.flatnonzero(y == 0)))
             x, y = x[order], y[order]
+            weights = weights[order]
+        if self.config.standardize:
+            self.mean_ = x.mean(axis=0)
+            self.scale_ = x.std(axis=0)
+            self.scale_[self.scale_ < 1e-6] = 1.0
+            x = (x - self.mean_) / self.scale_
         torch = self._torch()
         if self.config.schedule_mode not in {"pytorch", "official"}:
             raise ValueError("schedule_mode must be pytorch or official")
@@ -187,7 +256,9 @@ class TorchMLPProbe:
         self.device_ = self._resolve_device(torch)
         self.model = self._new_model(torch, self.input_dim).to(self.device_)
         dataset = torch.utils.data.TensorDataset(
-            torch.from_numpy(x), torch.from_numpy(y.astype(np.float32))
+            torch.from_numpy(x),
+            torch.from_numpy(y.astype(np.float32)),
+            torch.from_numpy(weights.astype(np.float32)),
         )
         generator = (
             torch.Generator().manual_seed(self.config.seed)
@@ -200,12 +271,19 @@ class TorchMLPProbe:
             shuffle=True,
             generator=generator,
         )
-        optimizer = torch.optim.SGD(
-            self.model.parameters(),
-            lr=self.config.learning_rate,
-            momentum=0.9,
-            weight_decay=self.config.weight_decay,
-        )
+        if self.config.optimizer == "adamw":
+            optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay,
+            )
+        else:
+            optimizer = torch.optim.SGD(
+                self.model.parameters(),
+                lr=self.config.learning_rate,
+                momentum=0.9,
+                weight_decay=self.config.weight_decay,
+            )
         scheduler = None
         if self.config.schedule_mode == "pytorch":
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -213,7 +291,7 @@ class TorchMLPProbe:
                 T_max=max(1, self.config.epochs),
                 eta_min=self.config.learning_rate * self.config.cosine_eta_min_factor,
             )
-        loss_fn = torch.nn.BCEWithLogitsLoss()
+        loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
         for epoch in range(self.config.epochs):
             if self.config.schedule_mode == "official":
                 eta_min = self.config.learning_rate * self.config.cosine_eta_min_factor
@@ -223,12 +301,14 @@ class TorchMLPProbe:
                 for group in optimizer.param_groups:
                     group["lr"] = float(rate)
             self.model.train()
-            for features, labels in loader:
+            for features, labels, batch_weights in loader:
                 features = features.to(self.device_)
                 labels = labels.to(self.device_)
+                batch_weights = batch_weights.to(self.device_)
                 optimizer.zero_grad(set_to_none=True)
                 logits = self.model(features).squeeze(-1)
-                loss = loss_fn(logits, labels)
+                losses = loss_fn(logits, labels)
+                loss = (losses * batch_weights).sum() / batch_weights.sum()
                 loss.backward()
                 optimizer.step()
             if scheduler is not None:
@@ -240,6 +320,9 @@ class TorchMLPProbe:
             raise RuntimeError("probe must be fitted before prediction")
         torch = self._torch()
         self.model.eval()
+        x = np.asarray(x, dtype=np.float32)
+        if self.mean_ is not None:
+            x = (x - self.mean_) / self.scale_
         with torch.inference_mode():
             tensor = torch.as_tensor(x, dtype=torch.float32, device=self.device_)
             return torch.sigmoid(self.model(tensor).squeeze(-1)).cpu().numpy()
@@ -253,6 +336,12 @@ class TorchMLPProbe:
                 "config": asdict(self.config),
                 "input_dim": self.input_dim,
                 "state_dict": self.model.state_dict(),
+                "mean": (
+                    None if self.mean_ is None else torch.from_numpy(self.mean_)
+                ),
+                "scale": (
+                    None if self.scale_ is None else torch.from_numpy(self.scale_)
+                ),
             },
             path,
         )
@@ -267,6 +356,10 @@ class TorchMLPProbe:
         result.device_ = result._resolve_device(torch)
         result.model = result._new_model(torch, result.input_dim)
         result.model.load_state_dict(state["state_dict"])
+        saved_mean = state.get("mean")
+        saved_scale = state.get("scale")
+        result.mean_ = None if saved_mean is None else saved_mean.cpu().numpy()
+        result.scale_ = None if saved_scale is None else saved_scale.cpu().numpy()
         result.model.to(result.device_)
         result.model.eval()
         return result

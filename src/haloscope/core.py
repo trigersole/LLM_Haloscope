@@ -7,7 +7,7 @@ Equation (7) from Du, Xiao, and Li (NeurIPS 2024):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -139,6 +139,19 @@ class LatentSubspace:
             # coordinates, then takes the magnitude of that scalar.
             return np.abs(np.mean(projected * weights[None, :], axis=1))
         return np.mean(projected**2 * weights[None, :], axis=1)
+
+    def truncated(self, n_components: int) -> LatentSubspace:
+        """Reuse a full NumPy SVD for a smaller k without refactorizing."""
+        self._require_fitted()
+        if not 1 <= n_components <= len(self.singular_values_):
+            raise ValueError(
+                f"n_components must be in [1, {len(self.singular_values_)}]"
+            )
+        result = LatentSubspace(replace(self.config, n_components=n_components))
+        result.mean_ = self.mean_.copy()
+        result.components_ = self.components_[:n_components].copy()
+        result.singular_values_ = self.singular_values_[:n_components].copy()
+        return result
 
     def save(self, path: str | Path) -> None:
         self._require_fitted()

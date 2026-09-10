@@ -51,6 +51,23 @@ def test_response_extraction_preserves_existing_behavior():
     assert captured == ["Q: Who wrote Hamlet? A:William Shakespeare."]
 
 
+def test_answer_mean_routes_prompt_and_answer_separately():
+    model = HFActivationModel.__new__(HFActivationModel)
+    model.config = ModelConfig(model_name="unused", activation_mode="answer_mean")
+    expected = np.ones((1, 2, 3), dtype=np.float32)
+    captured = {}
+
+    def fake_answer_mean(prompts, answers):
+        captured["prompts"] = prompts
+        captured["answers"] = answers
+        return expected
+
+    model.extract_answer_mean = fake_answer_mean
+    result = model.extract_records([{"prompt": "Q: test A:", "answer": " answer"}])
+    np.testing.assert_array_equal(result, expected)
+    assert captured == {"prompts": ["Q: test A:"], "answers": [" answer"]}
+
+
 def test_official_truthfulqa_answer_postprocessing_truncates_repeated_prompt():
     model = HFActivationModel.__new__(HFActivationModel)
     model.config = ModelConfig(

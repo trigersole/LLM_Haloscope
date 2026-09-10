@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,16 @@ def _atomic_numpy(path: Path, array: np.ndarray) -> None:
     with temporary.open("wb") as handle:
         np.save(handle, array)
     os.replace(temporary, path)
+
+
+def _input_paths(config: dict) -> dict[str, Path]:
+    """Resolve immutable generation/label artifacts reused by a derived run."""
+    source = config.get("artifact_source_dir")
+    if source is None:
+        return work_paths(config)
+    source_config = dict(config)
+    source_config["work_dir"] = source
+    return work_paths(source_config)
 
 
 def _model_config(config: dict) -> ModelConfig:
@@ -60,6 +71,8 @@ def _activation_metadata(config: dict) -> dict:
         ]
     elif model.activation_mode == "endpoint_delta":
         metadata["endpoint_delta_operation"] = "final_state_minus_prompt_state"
+    elif model.activation_mode == "answer_mean":
+        metadata["answer_pooling"] = "mean_over_generated_answer_tokens"
     return metadata
 
 
@@ -139,6 +152,10 @@ def command_extract(config: dict, source_config: dict | None = None) -> None:
         write_jsonl(paths["generations"], records)
         if source_paths["examples"].exists():
             write_jsonl(paths["examples"], read_jsonl(source_paths["examples"]))
+        if source_paths["labeled"].exists():
+            shutil.copyfile(source_paths["labeled"], paths["labeled"])
+        if source_paths["split"].exists():
+            shutil.copyfile(source_paths["split"], paths["split"])
 
     source_name = str(source_paths["generations"].resolve())
     expected_metadata = {**_activation_metadata(config), "source": source_name}
@@ -215,12 +232,14 @@ def _load_or_make_split(config: dict, n_samples: int, path: Path) -> DataSplit:
 
 def command_train(config: dict) -> None:
     paths = work_paths(config)
-    embeddings = np.load(paths["embeddings"])
-    records = read_jsonl(paths["labeled"])
+    inputs = _input_paths(config)
+    embeddings = np.load(inputs["embeddings"])
+    records = read_jsonl(inputs["labeled"])
     if len(embeddings) != len(records):
         raise RuntimeError("embeddings and labeled records have different sample counts")
     labels = np.asarray([record["truth_label"] for record in records], dtype=np.int64)
-    split = _load_or_make_split(config, len(records), paths["split"])
+    split_path = inputs["split"] if inputs["split"].exists() else paths["split"]
+    split = _load_or_make_split(config, len(records), split_path)
     search = search_config(config)
     if search.replay_official_numpy_rng:
         # The released process seeds NumPy once, generates this permutation, and
@@ -239,10 +258,12 @@ def command_train(config: dict) -> None:
 
 def command_evaluate(config: dict) -> dict[str, float]:
     paths = work_paths(config)
-    embeddings = np.load(paths["embeddings"])
-    records = read_jsonl(paths["labeled"])
+    inputs = _input_paths(config)
+    embeddings = np.load(inputs["embeddings"])
+    records = read_jsonl(inputs["labeled"])
     labels = np.asarray([record["truth_label"] for record in records], dtype=np.int64)
-    split = _load_or_make_split(config, len(records), paths["split"])
+    split_path = inputs["split"] if inputs["split"].exists() else paths["split"]
+    split = _load_or_make_split(config, len(records), split_path)
     detector = HaloScope.load(paths["detector"])
     metrics = detector.evaluate(embeddings[split.test], labels[split.test])
     paths["metrics"].write_text(json.dumps(metrics, indent=2), encoding="utf-8")
